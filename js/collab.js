@@ -102,8 +102,32 @@ export function parseRoom(spec) {
   if (!id || !key || unb64u(key).length !== 32) throw new Error('Ссылка повреждена');
   return { id, key, broker };
 }
-// Список брокеров комнаты: свой (из ссылки) или все публичные сразу
-function brokersFor(room) {
+// Свой сервер: если приложение открыто с нашего сервера (а не с GitHub Pages), рядом лежит
+// server.json с адресом синхронизации. Тогда используем только его — без публичных брокеров.
+let ownPromise = null;
+export function ownServer() {
+  if (!ownPromise) ownPromise = (async () => {
+    if (!/^https?:$/.test(location.protocol) || location.hostname.endsWith('github.io')) return null;
+    try {
+      const ctl = new AbortController();
+      const t = setTimeout(() => ctl.abort(), 4000);
+      const r = await fetch('server.json', { cache: 'no-store', signal: ctl.signal });
+      clearTimeout(t);
+      if (!r.ok) return null;
+      const j = await r.json();
+      if (!j?.mqtt) return null;
+      const url = /^wss?:\/\//.test(j.mqtt) ? j.mqtt : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + (j.mqtt.startsWith('/') ? '' : '/') + j.mqtt;
+      collab.own = { url, name: j.name || location.hostname };
+      return collab.own;
+    } catch { return null; }
+  })();
+  return ownPromise;
+}
+ownServer();
+
+// Список брокеров комнаты: свой (из ссылки), сервер приложения или все публичные сразу
+function brokersFor(room, own) {
+  if (own && !room.broker?.startsWith('u')) return [{ id: 'self', name: own.name, url: own.url }];
   if (room.broker?.startsWith('u')) {
     const url = td.decode(unb64u(room.broker.slice(1)));
     const s = brokerSettings();
@@ -113,7 +137,7 @@ function brokersFor(room) {
 }
 
 // ---------- состояние ----------
-export const collab = { active: false, status: 'off', error: '', room: null, users: new Map(), synced: false, links: [], direct: 0 };
+export const collab = { own: null, active: false, status: 'off', error: '', room: null, users: new Map(), synced: false, links: [], direct: 0 };
 const ls = { presence: [], state: [] };
 export const onPresence = (f) => ls.presence.push(f);
 export const onState = (f) => ls.state.push(f);
@@ -420,7 +444,7 @@ async function startPeer(other) {
   } catch (e) { console.warn('rtc', e); closePeer(other); }
 }
 async function onSignal(m) {
-  if (m.to !== cid) return;
+  if (m.to !== cid || typeof RTCPeerConnection === 'undefined') return;
   try {
     let p = peers.get(m.f);
     if (m.sdp?.type === 'offer') {
@@ -461,7 +485,9 @@ export async function connectRoom(board) {
   base = PREFIX + board.room.id + '/';
   cid = me.id + '_' + Math.random().toString(36).slice(2, 7);
   key = await importKey(board.room.key);
-  links = brokersFor(board.room).map((b) => ({ ...b, client: null, status: 'connecting', rtt: null, err: '', retryN: 0, retryTimer: null, blobN: new Map(), metaAt: new Map() }));
+  const own = await ownServer();
+  if (!collab.active || boardId !== board.id) return;
+  links = brokersFor(board.room, own).map((b) => ({ ...b, client: null, status: 'connecting', rtt: null, err: '', retryN: 0, retryTimer: null, blobN: new Map(), metaAt: new Map() }));
   refreshStatus(); emitPresence();
   // общие таймеры
   clearInterval(pingTimer); pingTimer = setInterval(() => send({ t: 'ping', user: me }), 10000);
