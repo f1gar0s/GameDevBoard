@@ -531,11 +531,11 @@ export function addLink(from, to, extra = {}) {
   store.upsertLink(l);
   return l;
 }
-// Видео YouTube на доске (как в Miro): обложка → плеер прямо на доске
+// Видео (YouTube, RuTube, VK) на доске как в Miro: обложка → плеер прямо на доске
 export function addVideo(url, pt) {
   const yt = parseYouTube(url);
   if (!yt) return null;
-  const it = createItem('video', pt, { id: yt.id, start: yt.start, url: yt.url, title: '' });
+  const it = createItem('video', pt, { src: yt.src, id: yt.id, hash: yt.hash || '', start: yt.start, url: yt.url, title: '' });
   youTubeTitle(yt.url).then((title) => { if (title && store.item(it.id)) store.patch(it.id, { data: { title } }); });
   return it;
 }
@@ -973,7 +973,7 @@ export function initCanvas() {
     if (files.length) { for (const f of files) await addImageFile(f, centerWorld()); return; }
     const text = dt?.getData('text/plain') || '';
     if (text.startsWith('gdboard:')) { try { pasteClip(JSON.parse(text.slice(8))); } catch { toast('Не удалось вставить', 'err'); } return; }
-    if (parseYouTube(text)) { addVideo(text.trim(), centerWorld()); return; }
+    if (parseYouTube(text)) { addVideo(text.trim(), findFreeSpot(centerWorld(), WIDGETS.video.w, WIDGETS.video.h)); return; }
     if (text.trim()) {
       const it = createItem('sticky', centerWorld(), { text: text.slice(0, 2000) });
       if (it && text.length > 200) store.patch(it.id, { w: 320, h: 320 });

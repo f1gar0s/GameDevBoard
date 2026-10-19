@@ -1,5 +1,5 @@
 // Общая логика, доступная компонентам (components/*.js получают её через ctx.lib)
-import { h, s, clamp, readFileAsDataURL, loadImage } from './util.js';
+import { h, s, clamp, readFileAsDataURL, loadImage, videoEmbedUrl, VIDEO_SITES } from './util.js';
 
 export const RARITY = {
   common: { name: 'Обычный', color: '#9ca3af' },
@@ -202,15 +202,18 @@ export async function pickImage(cb) {
 export const playingVideos = new Set();
 export function renderYouTube(d, key, rerender) {
   if (!d.id) return h('div', { class: 'yt-empty muted' }, 'Нет ссылки на видео');
+  const src = d.src || 'yt';
   if (playingVideos.has(key)) {
-    const src = `https://www.youtube-nocookie.com/embed/${d.id}?autoplay=1&rel=0&playsinline=1${d.start ? '&start=' + d.start : ''}`;
     return h('div', { class: 'yt-frame' },
-      h('iframe', { src, title: d.title || 'YouTube', allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin', frameborder: '0' }),
+      h('iframe', { src: videoEmbedUrl(d), title: d.title || VIDEO_SITES[src], allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen; clipboard-write; screen-wake-lock', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin', frameborder: '0' }),
       h('button', { class: 'yt-stop no-drag', title: 'Остановить и показать обложку', onClick: (e) => { e.stopPropagation(); playingVideos.delete(key); rerender(); } }, '■'));
   }
-  return h('div', { class: 'yt-cover' },
-    h('img', { src: `https://i.ytimg.com/vi/${d.id}/hqdefault.jpg`, alt: d.title || '', draggable: 'false' }),
+  const thumb = src === 'yt' ? `https://i.ytimg.com/vi/${d.id}/hqdefault.jpg` : src === 'rutube' ? `https://rutube.ru/api/video/${d.id}/thumbnail/?redirect=1` : null;
+  const color = src === 'rutube' ? '#00a1e7' : src === 'vk' ? '#0077ff' : '#f00';
+  return h('div', { class: 'yt-cover vsrc-' + src },
+    thumb ? h('img', { src: thumb, alt: d.title || '', draggable: 'false', onError: (e) => e.target.remove() }) : null,
+    src !== 'yt' ? h('span', { class: 'v-site' }, VIDEO_SITES[src]) : null,
     h('button', { class: 'yt-play no-drag', title: 'Смотреть прямо на доске', onClick: (e) => { e.stopPropagation(); playingVideos.add(key); rerender(); } },
-      s('svg', { viewBox: '0 0 68 48', width: 68, height: 48 }, s('path', { d: 'M66.5 7.7c-.8-2.9-3-5.2-5.9-6C55.3.3 34 .3 34 .3s-21.3 0-26.6 1.4c-2.9.8-5.1 3.1-5.9 6C.1 13 .1 24 .1 24s0 11 1.4 16.3c.8 2.9 3 5.2 5.9 6C12.7 47.7 34 47.7 34 47.7s21.3 0 26.6-1.4c2.9-.8 5.1-3.1 5.9-6C67.9 35 67.9 24 67.9 24s0-11-1.4-16.3z', fill: '#f00' }), s('path', { d: 'M27 34V14l18 10z', fill: '#fff' }))),
+      s('svg', { viewBox: '0 0 68 48', width: 68, height: 48 }, s('path', { d: 'M66.5 7.7c-.8-2.9-3-5.2-5.9-6C55.3.3 34 .3 34 .3s-21.3 0-26.6 1.4c-2.9.8-5.1 3.1-5.9 6C.1 13 .1 24 .1 24s0 11 1.4 16.3c.8 2.9 3 5.2 5.9 6C12.7 47.7 34 47.7 34 47.7s21.3 0 26.6-1.4c2.9-.8 5.1-3.1 5.9-6C67.9 35 67.9 24 67.9 24s0-11-1.4-16.3z', fill: color }), s('path', { d: 'M27 34V14l18 10z', fill: '#fff' }))),
     d.start ? h('span', { class: 'yt-time' }, `с ${Math.floor(d.start / 60)}:${String(d.start % 60).padStart(2, '0')}`) : null);
 }

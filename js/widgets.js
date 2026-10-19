@@ -10,6 +10,7 @@ export const ACCENT_COLORS = ['#7c5cff', '#22d3a6', '#f59e0b', '#ef4444', '#3b82
 export { RARITY, STATUS, TAGS, PRIORITY, TILES, compileFormula, parseSeries, sampleSeries, tileRows, drawTiles, resizeCells } from './lib.js';
 import { CARD, optionOf } from './card.js';
 import { renderYouTube } from './lib.js';
+import { videoPageUrl, VIDEO_SITES } from './util.js';
 import { getComponent } from './registry.js';
 
 // ---------- helpers ----------
@@ -134,16 +135,16 @@ export const WIDGETS = {
     },
   },
   video: {
-    label: 'Видео YouTube', icon: '▶', w: 480, h: 304, min: [200, 140],
-    data: () => ({ id: '', start: 0, url: '', title: '' }),
-    title: (d) => d.title || 'Видео YouTube',
+    label: 'Видео', icon: '▶', w: 480, h: 304, min: [200, 140],
+    data: () => ({ src: 'yt', id: '', start: 0, url: '', title: '' }),
+    title: (d) => d.title || 'Видео ' + VIDEO_SITES[d.src || 'yt'],
     render(it, api) {
       const d = it.data;
       return h('div', { class: 'videobox' },
         h('div', { class: 'video-bar' },
-          h('span', { class: 'yt-badge' }, '▶'),
-          h('span', { class: 'video-title' }, d.title || 'YouTube'),
-          d.url ? h('a', { class: 'video-open no-drag', href: `https://www.youtube.com/watch?v=${d.id}${d.start ? '&t=' + d.start + 's' : ''}`, target: '_blank', rel: 'noopener', title: 'Открыть на YouTube' }, '↗') : null),
+          h('span', { class: 'yt-badge vsrc-' + (d.src || 'yt') }, '▶'),
+          h('span', { class: 'video-title' }, d.title || VIDEO_SITES[d.src || 'yt']),
+          d.url ? h('a', { class: 'video-open no-drag', href: videoPageUrl(d), target: '_blank', rel: 'noopener', title: 'Открыть на ' + VIDEO_SITES[d.src || 'yt'] }, '↗') : null),
         h('div', { class: 'video-body' }, renderYouTube(d, it.id, () => api.rerender())));
     },
   },

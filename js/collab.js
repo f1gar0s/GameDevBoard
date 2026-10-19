@@ -1,5 +1,7 @@
 // Совместный доступ, работающий на GitHub Pages (без своего сервера).
-// Браузеры подключаются к публичному MQTT-брокеру по wss:// и обмениваются изменениями.
+// Браузер подключается СРАЗУ К НЕСКОЛЬКИМ публичным MQTT-брокерам по wss:// (если какой-то
+// заблокирован у провайдера, работают остальные), а с другими участниками дополнительно
+// устанавливает прямое WebRTC-соединение — правки доходят мгновенно, без сервера посередине.
 // Всё содержимое шифруется AES-GCM ключом из ссылки — брокер видит только шифротекст.
 // Последнее состояние доски хранится на брокере («retained»-сообщения), поэтому комнату
 // можно открыть по ссылке в любое время, даже если создатель офлайн.
@@ -9,6 +11,7 @@ import { setRemoteCursor, removeRemoteCursor, clearRemoteCursors, screenToWorld,
 import { MQTTClient } from './mqtt.js';
 
 export const BROKERS = {
+  eclipse: { name: 'Eclipse (порт 443)', url: 'wss://mqtt.eclipseprojects.io:443/mqtt' },
   emqx: { name: 'EMQX (broker.emqx.io)', url: 'wss://broker.emqx.io:8084/mqtt' },
   hivemq: { name: 'HiveMQ (broker.hivemq.com)', url: 'wss://broker.hivemq.com:8884/mqtt' },
   mosquitto: { name: 'Mosquitto (test.mosquitto.org)', url: 'wss://test.mosquitto.org:8081/mqtt' },
@@ -32,7 +35,7 @@ export function setMyName(name) {
   if (collab.active) send({ t: 'ping', user: me });
 }
 export function brokerSettings() {
-  try { return JSON.parse(localStorage.getItem('gdb-broker') || 'null') || { id: 'emqx' }; } catch { return { id: 'emqx' }; }
+  try { const v = JSON.parse(localStorage.getItem('gdb-broker') || 'null'); return v && v.id === 'custom' ? v : { id: 'auto' }; } catch { return { id: 'auto' }; }
 }
 export function saveBrokerSettings(s) { try { localStorage.setItem('gdb-broker', JSON.stringify(s)); } catch {} }
 
@@ -88,60 +91,81 @@ const inflate = (b) => pipe(b, new DecompressionStream('deflate-raw'));
 // ---------- комната и ссылка ----------
 export function newRoom() {
   const s = brokerSettings();
-  const broker = s.id === 'custom' ? 'u' + b64u(te.encode(s.url || '')) : s.id || 'emqx';
+  const broker = s.id === 'custom' ? 'u' + b64u(te.encode(s.url || '')) : 'all';
   return { id: b64u(crypto.getRandomValues(new Uint8Array(9))), key: b64u(crypto.getRandomValues(new Uint8Array(32))), broker };
 }
 export function roomLink(room) {
   return location.origin + location.pathname + '#/room/' + room.id + '.' + room.key + '.' + room.broker;
 }
 export function parseRoom(spec) {
-  const [id, key, broker = 'emqx'] = spec.split('.');
+  const [id, key, broker = 'all'] = spec.split('.');
   if (!id || !key || unb64u(key).length !== 32) throw new Error('Ссылка повреждена');
   return { id, key, broker };
 }
-function brokerFor(room) {
+// Список брокеров комнаты: свой (из ссылки) или все публичные сразу
+function brokersFor(room) {
   if (room.broker?.startsWith('u')) {
     const url = td.decode(unb64u(room.broker.slice(1)));
     const s = brokerSettings();
-    return { url, username: s.url === url ? s.username : undefined, password: s.url === url ? s.password : undefined };
+    return [{ id: 'custom', name: 'Свой брокер', url, username: s.url === url ? s.username : undefined, password: s.url === url ? s.password : undefined }];
   }
-  return { url: (BROKERS[room.broker] || BROKERS.emqx).url };
+  return Object.entries(BROKERS).map(([id, b]) => ({ id, ...b }));
 }
 
 // ---------- состояние ----------
-export const collab = { active: false, status: 'off', error: '', room: null, users: new Map(), synced: false };
+export const collab = { active: false, status: 'off', error: '', room: null, users: new Map(), synced: false, links: [], direct: 0 };
 const ls = { presence: [], state: [] };
 export const onPresence = (f) => ls.presence.push(f);
 export const onState = (f) => ls.state.push(f);
 const emitPresence = () => ls.presence.forEach((f) => f([...collab.users.values()]));
 const emitState = () => ls.state.forEach((f) => f(collab));
 
-let client = null, key = null, base = '', cid = '', boardId = null;
-let dirty = false, applying = false, retryTimer = null, retryN = 0, pingTimer = null, sweepTimer = null, syncTimer = null;
+let links = [], key = null, base = '', cid = '', boardId = null, seq = 0;
+let dirty = false, applying = false, pingTimer = null, sweepTimer = null, syncTimer = null;
+const online = () => links.filter((l) => l.client?.connected);
+const anyOnline = () => links.some((l) => l.client?.connected);
+function publish(topic, bytes, opts, only) { for (const l of only ? [only].filter((x) => x.client?.connected) : online()) { try { l.client.publish(topic, bytes, opts); } catch {} } }
+function refreshStatus() {
+  const was = collab.status;
+  collab.status = !collab.active ? 'off' : anyOnline() ? 'online' : links.some((l) => l.status === 'connecting') && was !== 'reconnecting' ? 'connecting' : 'reconnecting';
+  collab.links = links.map((l) => ({ id: l.id, name: l.name, status: l.status, rtt: l.rtt, err: l.err }));
+  collab.direct = [...peers.values()].filter((p) => p.open).length;
+  collab.error = anyOnline() ? '' : links.map((l) => l.err).filter(Boolean)[0] || '';
+  emitState();
+}
 const blobs = new Map();   // путь → { meta, chunks }
 const blobN = new Map();   // путь → число частей на брокере
 const done = new Map();    // путь → версия, уже применённая
+const appliedAt = new Map(); // путь → время применённой версии (старые копии с других брокеров игнорируем)
 
 // ---------- отправка ----------
+// Каждое сообщение уходит сразу по прямым каналам (WebRTC) и почти сразу — через брокеры.
+// У сообщения есть номер (f + s), поэтому дубли, пришедшие разными путями, отбрасываются.
 const queue = new Map();
 let flushTimer = null;
-function send(msg) {
-  if (!client?.connected) return;
-  const k = msg.t + ':' + (msg.item?.id || msg.link?.id || msg.id || '');
-  queue.set(k, msg);
-  if (!flushTimer) flushTimer = setTimeout(flush, 45);
+function send(msg, { mqttOnly = false } = {}) {
+  if (!collab.active) return;
+  const m = { ...msg, f: cid, s: ++seq };
+  if (!mqttOnly) rtcSend(m);
+  if (!anyOnline()) return;
+  const k = m.t === 'up' || m.t === 'cur' || m.t === 'lup' ? m.t + ':' + (m.item?.id || m.link?.id || m.uid || '') : m.t + ':' + m.s;
+  queue.set(k, m);
+  // если со всеми участниками есть прямой канал, брокерам можно слать реже (они нужны для опоздавших)
+  const delay = m.t === 'rtc' || m.t === 'hello' ? 0 : allDirect() ? 150 : 16;
+  if (!flushTimer) flushTimer = setTimeout(flush, delay);
 }
 async function flush() {
   flushTimer = null;
   const msgs = [...queue.values()];
   queue.clear();
-  if (!client?.connected || !key) return;
+  if (!anyOnline() || !key) return;
   for (const m of msgs) {
-    try { client.publish(base + 'live', await seal(key, te.encode(JSON.stringify({ ...m, f: cid })))); } catch (e) { console.warn(e); }
+    try { publish(base + 'live', await seal(key, te.encode(JSON.stringify(m)))); } catch (e) { console.warn(e); }
   }
 }
-async function putBlob(path, bytes) {
-  if (!client?.connected) return;
+// only — опубликовать только на одном брокере (догоняем сервер, который был недоступен)
+async function putBlob(path, bytes, only = null) {
+  if (only ? !only.client?.connected : !anyOnline()) return;
   const ct = await seal(key, await deflate(bytes));
   const ver = crypto.getRandomValues(new Uint32Array(1))[0];
   const n = Math.max(1, Math.ceil(ct.length / CHUNK));
@@ -151,25 +175,43 @@ async function putBlob(path, bytes) {
     const dv = new DataView(msg.buffer);
     dv.setUint32(0, ver); dv.setUint32(4, i);
     msg.set(part, 8);
-    if (!client?.connected) return;
-    client.publish(base + path + '/' + i, msg, { retain: true });
+    if (!anyOnline()) return;
+    publish(base + path + '/' + i, msg, { retain: true }, only);
     if (n > 2) await sleep(30); // не заваливаем публичный брокер пачкой сообщений
   }
-  client.publish(base + path + '/meta', await seal(key, te.encode(JSON.stringify({ v: ver, n }))), { retain: true });
-  const old = blobN.get(path) || 0;
-  for (let i = n; i < old; i++) client.publish(base + path + '/' + i, new Uint8Array(0), { retain: true });
+  const at = Date.now();
+  publish(base + path + '/meta', await seal(key, te.encode(JSON.stringify({ v: ver, n, at }))), { retain: true }, only);
+  for (const l of only ? [only] : online()) {
+    const old = l.blobN.get(path) || 0;
+    for (let i = n; i < old; i++) publish(base + path + '/' + i, new Uint8Array(0), { retain: true }, l);
+    l.blobN.set(path, n); l.metaAt.set(path, at);
+  }
   blobN.set(path, n);
   done.set(path, ver);
+  appliedAt.set(path, at);
 }
 function dropBlob(path) {
-  const n = blobN.get(path) || 0;
-  client.publish(base + path + '/meta', new Uint8Array(0), { retain: true });
-  for (let i = 0; i < n; i++) client.publish(base + path + '/' + i, new Uint8Array(0), { retain: true });
-  blobN.delete(path); done.delete(path); blobs.delete(path);
+  for (const l of online()) {
+    const n = l.blobN.get(path) || blobN.get(path) || 0;
+    publish(base + path + '/meta', new Uint8Array(0), { retain: true }, l);
+    for (let i = 0; i < n; i++) publish(base + path + '/' + i, new Uint8Array(0), { retain: true }, l);
+    l.blobN.delete(path); l.metaAt.delete(path); blobs.delete(l.id + '|' + path);
+  }
+  blobN.delete(path); done.delete(path);
+}
+// Сервер переподключился (или был недоступен): докладываем ему то, чего у него нет или что устарело
+async function repairLink(l) {
+  if (!l.client?.connected || !collab.synced || store.board?.id !== boardId) return;
+  if ((appliedAt.get('snap') || 1) > (l.metaAt.get('snap') || 0) || dirty) {
+    const b = store.board;
+    await putBlob('snap', te.encode(JSON.stringify({ name: b.name, items: b.items, links: b.links, at: Date.now(), by: me.name })), l);
+  }
+  const used = referencedAssets(store.board.items);
+  for (const [id, src] of Object.entries(store.board.assets || {})) if (used.has(id) && !l.metaAt.has('asset/' + id)) await putBlob('asset/' + id, assetToBytes(src), l);
 }
 
 async function publishSnapshot() {
-  if (!client?.connected || !store.board || store.board.id !== boardId) return;
+  if (!anyOnline() || !store.board || store.board.id !== boardId) return;
   const b = store.board;
   const snap = { name: b.name, items: b.items, links: b.links, at: Date.now(), by: me.name };
   await putBlob('snap', te.encode(JSON.stringify(snap)));
@@ -182,29 +224,30 @@ async function publishSnapshot() {
 const scheduleSnapshot = debounce(() => publishSnapshot(), 2500);
 async function publishAllAssets() {
   const used = referencedAssets(store.board.items);
-  for (const [id, src] of Object.entries(store.board.assets || {})) if (used.has(id) && !blobN.has('asset/' + id)) await putBlob('asset/' + id, assetToBytes(src));
+  for (const [id, src] of Object.entries(store.board.assets || {})) if (used.has(id) && !online().every((l) => l.metaAt.has('asset/' + id))) await putBlob('asset/' + id, assetToBytes(src));
 }
 
 // ---------- приём ----------
-async function onMessage(topic, payload) {
+async function onMessage(topic, payload, l) {
   if (!topic.startsWith(base)) return;
   const rest = topic.slice(base.length);
   try {
     if (rest === 'live') {
       if (!payload.length) return;
-      const m = JSON.parse(td.decode(await unseal(key, payload)));
-      if (m.f === cid) return;
-      apply(m);
+      handleLive(JSON.parse(td.decode(await unseal(key, payload))));
       return;
     }
     const cut = rest.lastIndexOf('/');
     const path = rest.slice(0, cut), part = rest.slice(cut + 1);
-    let bl = blobs.get(path);
-    if (!bl) blobs.set(path, (bl = { meta: null, chunks: new Map() }));
+    // куски собираются отдельно для каждого брокера: на разных серверах могут лежать разные версии
+    const bk = l.id + '|' + path;
+    let bl = blobs.get(bk);
+    if (!bl) blobs.set(bk, (bl = { meta: null, chunks: new Map() }));
     if (part === 'meta') {
-      if (!payload.length) { blobs.delete(path); blobN.delete(path); return; }
+      if (!payload.length) { blobs.delete(bk); l.blobN.delete(path); l.metaAt.delete(path); return; }
       bl.meta = JSON.parse(td.decode(await unseal(key, payload)));
-      blobN.set(path, bl.meta.n);
+      l.blobN.set(path, bl.meta.n); l.metaAt.set(path, bl.meta.at || 1);
+      blobN.set(path, Math.max(blobN.get(path) || 0, bl.meta.n));
     } else {
       if (!payload.length) return;
       const dv = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
@@ -219,8 +262,10 @@ async function onMessage(topic, payload) {
 async function tryAssemble(path, bl) {
   const m = bl.meta;
   if (!m || done.get(path) === m.v) return;
+  if (m.at && (appliedAt.get(path) || 0) > m.at) return; // на другом брокере уже была более свежая версия
   for (let i = 0; i < m.n; i++) if (bl.chunks.get(i)?.v !== m.v) return;
   done.set(path, m.v);
+  if (m.at) appliedAt.set(path, m.at);
   const parts = Array.from({ length: m.n }, (_, i) => bl.chunks.get(i).data);
   const all = new Uint8Array(parts.reduce((a, p) => a + p.length, 0));
   let o = 0;
@@ -254,6 +299,24 @@ function applySnapshot(s) {
   }
   emitState();
 }
+// Приём «живого» сообщения (через брокер или напрямую): отсев дублей и устаревших правок
+const seen = new Map();
+const lastSeq = new Map();
+function handleLive(m) {
+  if (!m || m.f === cid) return;
+  const id = m.f + ':' + m.s;
+  if (seen.has(id)) return;
+  seen.set(id, 1);
+  if (seen.size > 20000) for (const k of [...seen.keys()].slice(0, 5000)) seen.delete(k);
+  if (m.t === 'up' || m.t === 'rm' || m.t === 'lup' || m.t === 'lrm') {
+    const k = m.f + '|' + (m.item?.id || m.link?.id || m.id);
+    if ((lastSeq.get(k) || 0) > m.s) return; // более новая правка этого элемента уже пришла
+    lastSeq.set(k, m.s);
+  }
+  if (m.t === 'rtc') { onSignal(m); return; }
+  maybeConnectPeer(m.f);
+  apply(m);
+}
 function apply(m) {
   const o = { remote: true };
   applying = true;
@@ -264,10 +327,10 @@ function apply(m) {
       case 'lup': store.upsertLink(m.link, o); break;
       case 'lrm': store.removeLink(m.id, o); break;
       case 'rename': store.rename(m.name, o); break;
-      case 'cur': setRemoteCursor(m.uid, m); touchUser({ id: m.uid, name: m.name, color: m.color }); break;
-      case 'hello': touchUser(m.user); send({ t: 'ping', user: me }); toast(`${m.user.name} подключился`, 'ok', 1800); break;
-      case 'ping': touchUser(m.user); break;
-      case 'bye': dropUser(m.uid); break;
+      case 'cur': setRemoteCursor(m.uid, m); touchUser({ id: m.uid, name: m.name, color: m.color, cid: m.f }); break;
+      case 'hello': { const isNew = !collab.users.has(m.user?.id); touchUser({ ...m.user, cid: m.f }); send({ t: 'ping', user: me }); if (isNew) toast(`${m.user.name} подключился`, 'ok', 1800); break; }
+      case 'ping': touchUser({ ...m.user, cid: m.f }); break;
+      case 'bye': closePeer(m.f); dropUser(m.uid); break;
       case 'need': answerNeed(m.ids || []); break;
     }
   } finally { applying = false; }
@@ -283,6 +346,7 @@ function dropUser(id) {
   if (!u || id === me.id) return;
   collab.users.delete(id);
   removeRemoteCursor(id);
+  if (u.cid) closePeer(u.cid);
   emitPresence();
 }
 
@@ -307,6 +371,85 @@ function answerNeed(ids) {
   }, 300 + Math.random() * 1500);
 }
 
+// ---------- прямые соединения WebRTC (брокер нужен только для «знакомства») ----------
+const ICE = [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.sipnet.ru:3478' },
+];
+const peers = new Map();   // cid участника → { pc, dc, open, cands, remoteSet }
+const failedAt = new Map();
+const allDirect = () => { const others = [...collab.users.values()].filter((u) => u.id !== me.id); return others.length > 0 && others.every((u) => peers.get(u.cid)?.open); };
+function rtcSend(m) {
+  if (!peers.size) return;
+  const str = JSON.stringify(m);
+  if (str.length > 60000) return; // крупные сообщения — только через брокер
+  for (const p of peers.values()) if (p.open) { try { p.dc.send(str); } catch {} }
+}
+function maybeConnectPeer(other) {
+  if (!other || other === cid || peers.has(other) || typeof RTCPeerConnection === 'undefined') return;
+  if (Date.now() - (failedAt.get(other) || 0) < 30000) return;
+  if (cid < other) startPeer(other); // соединение начинает участник с меньшим id, второй ждёт предложение
+}
+function makePeer(other) {
+  const pc = new RTCPeerConnection({ iceServers: ICE });
+  const p = { pc, dc: null, open: false, cands: [], remoteSet: false };
+  peers.set(other, p);
+  pc.onicecandidate = (e) => { if (e.candidate) send({ t: 'rtc', to: other, cand: e.candidate.toJSON() }, { mqttOnly: true }); };
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') { failedAt.set(other, Date.now()); closePeer(other); }
+  };
+  pc.ondatachannel = (e) => setupChannel(other, e.channel);
+  return p;
+}
+function setupChannel(other, dc) {
+  const p = peers.get(other);
+  if (!p) return;
+  p.dc = dc;
+  dc.onopen = () => { p.open = true; refreshStatus(); };
+  dc.onclose = () => { p.open = false; refreshStatus(); };
+  dc.onmessage = (e) => { try { handleLive(JSON.parse(e.data)); } catch {} };
+}
+async function startPeer(other) {
+  try {
+    const p = makePeer(other);
+    setupChannel(other, p.pc.createDataChannel('gdb', { ordered: true }));
+    await p.pc.setLocalDescription(await p.pc.createOffer());
+    send({ t: 'rtc', to: other, sdp: p.pc.localDescription.toJSON() }, { mqttOnly: true });
+    setTimeout(() => { if (peers.get(other) === p && !p.open) { failedAt.set(other, Date.now()); closePeer(other); } }, 20000);
+  } catch (e) { console.warn('rtc', e); closePeer(other); }
+}
+async function onSignal(m) {
+  if (m.to !== cid) return;
+  try {
+    let p = peers.get(m.f);
+    if (m.sdp?.type === 'offer') {
+      if (p) closePeer(m.f);
+      p = makePeer(m.f);
+      await p.pc.setRemoteDescription(m.sdp);
+      p.remoteSet = true;
+      for (const c of p.cands.splice(0)) await p.pc.addIceCandidate(c).catch(() => {});
+      await p.pc.setLocalDescription(await p.pc.createAnswer());
+      send({ t: 'rtc', to: m.f, sdp: p.pc.localDescription.toJSON() }, { mqttOnly: true });
+    } else if (m.sdp?.type === 'answer' && p && !p.remoteSet) {
+      await p.pc.setRemoteDescription(m.sdp);
+      p.remoteSet = true;
+      for (const c of p.cands.splice(0)) await p.pc.addIceCandidate(c).catch(() => {});
+    } else if (m.cand && p) {
+      if (p.remoteSet) await p.pc.addIceCandidate(m.cand).catch(() => {});
+      else p.cands.push(m.cand);
+    }
+  } catch (e) { console.warn('rtc signal', e); }
+}
+function closePeer(other) {
+  const p = peers.get(other);
+  if (!p) return;
+  peers.delete(other);
+  try { p.dc?.close(); } catch {}
+  try { p.pc.close(); } catch {}
+  refreshStatus();
+}
+
 // ---------- подключение ----------
 export async function connectRoom(board) {
   if (collab.active && collab.room?.id === board.room?.id && boardId === board.id) return;
@@ -318,58 +461,63 @@ export async function connectRoom(board) {
   base = PREFIX + board.room.id + '/';
   cid = me.id + '_' + Math.random().toString(36).slice(2, 7);
   key = await importKey(board.room.key);
-  emitState(); emitPresence();
-  await dial();
+  links = brokersFor(board.room).map((b) => ({ ...b, client: null, status: 'connecting', rtt: null, err: '', retryN: 0, retryTimer: null, blobN: new Map(), metaAt: new Map() }));
+  refreshStatus(); emitPresence();
+  // общие таймеры
+  clearInterval(pingTimer); pingTimer = setInterval(() => send({ t: 'ping', user: me }), 10000);
+  clearInterval(sweepTimer); sweepTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [id, u] of collab.users) if (id !== me.id && now - (u.seen || 0) > 35000) dropUser(id);
+  }, 5000);
+  // если на брокерах нет сохранённой доски — значит, мы первые: выкладываем свою
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(async () => {
+    if (!collab.synced && store.board?.id === boardId && anyOnline()) {
+      collab.synced = true;
+      if (Object.keys(store.board.items).length || dirty) await publishSnapshot();
+      refreshStatus();
+    }
+    await publishAllAssets();
+    setTimeout(requestMissing, 2500);
+  }, 4000);
+  await Promise.race([Promise.all(links.map(dialLink)), new Promise((r) => setTimeout(r, 8000))]);
 }
-async function dial() {
-  if (!collab.active) return;
-  const br = brokerFor(collab.room);
-  const will = { topic: base + 'live', payload: await seal(key, te.encode(JSON.stringify({ t: 'bye', uid: me.id, f: cid }))) };
-  client = new MQTTClient(br.url, { clientId: cid, username: br.username, password: br.password, will, keepalive: 30 });
-  client.on('message', onMessage);
+async function dialLink(l) {
+  if (!collab.active || !links.includes(l)) return;
+  const will = { topic: base + 'live', payload: await seal(key, te.encode(JSON.stringify({ t: 'bye', uid: me.id, f: cid, s: 0 }))) };
+  const client = new MQTTClient(l.url, { clientId: cid + '_' + l.id, username: l.username, password: l.password, will, keepalive: 30 });
+  l.client = client; l.status = 'connecting'; refreshStatus();
+  client.on('message', (t, p) => onMessage(t, p, l));
   client.on('close', () => {
-    if (!collab.active) return;
-    collab.status = 'reconnecting'; emitState();
-    retry();
+    if (!collab.active || l.client !== client) return;
+    l.status = 'error'; l.err = 'связь потеряна'; refreshStatus();
+    retryLink(l);
   });
+  const t0 = performance.now();
   try {
-    await client.connect();
-    retryN = 0;
-    collab.status = 'online'; collab.error = ''; emitState();
-    blobs.clear(); done.clear();
+    await client.connect(9000);
+    l.rtt = Math.round(performance.now() - t0);
+    l.retryN = 0; l.status = 'online'; l.err = '';
+    l.blobN.clear(); l.metaAt.clear();
     await client.subscribe(base + '#');
+    refreshStatus();
     send({ t: 'hello', user: me });
-    clearInterval(pingTimer); pingTimer = setInterval(() => send({ t: 'ping', user: me }), 10000);
-    clearInterval(sweepTimer); sweepTimer = setInterval(() => {
-      const now = Date.now();
-      for (const [id, u] of collab.users) if (id !== me.id && now - (u.seen || 0) > 35000) dropUser(id);
-    }, 5000);
-    // если на брокере нет сохранённой доски — значит, мы первые: выкладываем свою
-    clearTimeout(syncTimer);
-    syncTimer = setTimeout(async () => {
-      if (!collab.synced && store.board?.id === boardId) {
-        collab.synced = true;
-        if (Object.keys(store.board.items).length || dirty) await publishSnapshot();
-        emitState();
-      }
-      // картинки, вставленные без связи, — выложить; чужих не хватает — попросить
-      await publishAllAssets();
-      setTimeout(requestMissing, 2500);
-    }, 3500);
     if (dirty) scheduleSnapshot();
-    if (collab.synced) setTimeout(() => { publishAllAssets(); requestMissing(); }, 4000); // после переподключения
+    // через пару секунд (когда сервер пришлёт сохранённое) докладываем ему недостающее
+    setTimeout(() => { if (l.client === client) repairLink(l).then(() => requestMissing()); }, 3000);
   } catch (e) {
-    collab.status = 'reconnecting';
-    collab.error = e.message || 'ошибка сети';
-    emitState();
-    retry();
+    l.status = 'error'; l.err = e.message || 'недоступен';
+    refreshStatus();
+    retryLink(l);
   }
 }
-function retry() {
-  clearTimeout(retryTimer);
-  const delay = [1000, 2000, 4000, 8000, 15000, 30000][Math.min(retryN++, 5)];
-  retryTimer = setTimeout(() => { if (collab.active) dial(); }, delay);
+function retryLink(l) {
+  clearTimeout(l.retryTimer);
+  const delay = [2000, 4000, 8000, 15000, 30000, 60000][Math.min(l.retryN++, 5)];
+  l.retryTimer = setTimeout(() => { if (collab.active && links.includes(l)) dialLink(l); }, delay);
 }
+// Ручная проверка связи (кнопка в окне «Совместно»)
+export function redial() { for (const l of links) if (!l.client?.connected) { clearTimeout(l.retryTimer); l.retryN = 0; dialLink(l); } }
 
 // Открыть совместный доступ к текущей доске (создать комнату)
 export async function shareBoard() {
@@ -392,18 +540,28 @@ export async function shareBoard() {
 
 // Отключиться (forget — забыть комнату у этой доски)
 export function leave(silent = false, forget = false) {
-  clearTimeout(retryTimer); clearInterval(pingTimer); clearInterval(sweepTimer); clearTimeout(syncTimer);
-  if (client) {
-    if (client.connected && key) { try { flush(); } catch {} send({ t: 'bye', uid: me.id }); flush(); }
-    const c = client;
-    setTimeout(() => c.end(), 150);
+  clearInterval(pingTimer); clearInterval(sweepTimer); clearTimeout(syncTimer);
+  const old = links, oldKey = key, topic = base + 'live';
+  if (collab.active && oldKey) {
+    rtcSend({ t: 'bye', uid: me.id, f: cid, s: ++seq });
+    const bye = { t: 'bye', uid: me.id, f: cid, s: ++seq };
+    seal(oldKey, te.encode(JSON.stringify(bye))).then((p) => { for (const l of old) if (l.client?.connected) try { l.client.publish(topic, p); } catch {} }).catch(() => {});
   }
-  client = null;
+  for (const l of old) {
+    clearTimeout(l.retryTimer);
+    const c = l.client;
+    if (c) setTimeout(() => c.end(), 250);
+  }
+  links = [];
+  queue.clear(); clearTimeout(flushTimer); flushTimer = null;
+  blobs.clear(); blobN.clear(); done.clear(); appliedAt.clear();
+  for (const k of [...peers.keys()]) closePeer(k);
   if (forget && store.board?.room) { delete store.board.room; DB.put(store.board); }
-  collab.active = false; collab.status = 'off'; collab.room = null; collab.synced = false;
+  collab.active = false; collab.status = 'off'; collab.room = null; collab.synced = false; collab.links = []; collab.direct = 0;
   collab.users.clear();
   clearRemoteCursors();
   boardId = null;
+  seen.clear(); lastSeq.clear();
   if (!silent) { emitPresence(); emitState(); }
 }
 export async function syncNow() { if (collab.active) { await publishSnapshot(); toast('Доска сохранена в комнате', 'ok', 1500); } }
@@ -419,7 +577,7 @@ store.on('rename', (name, o) => { if (local(o)) { send({ t: 'rename', name }); c
 store.on('asset', (id, src, o) => { if (local(o)) putBlob('asset/' + id, assetToBytes(src)); });
 
 export function trackCursor(vp) {
-  const sendCur = throttle((x, y) => send({ t: 'cur', uid: me.id, name: me.name, color: me.color, x, y }), 70);
+  const sendCur = throttle((x, y) => send({ t: 'cur', uid: me.id, name: me.name, color: me.color, x, y }), 40);
   vp.addEventListener('pointermove', (e) => {
     if (!collab.active || collab.status !== 'online') return;
     const p = screenToWorld(e.clientX, e.clientY);

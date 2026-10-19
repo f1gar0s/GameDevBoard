@@ -689,3 +689,18 @@ kbd { font-family: var(--mono); font-size: 11.5px; background: var(--panel2); bo
 .yt-empty { display: grid; place-items: center; height: 100%; }
 #viewport.panning iframe, #viewport.dragging iframe, #viewport.space iframe { pointer-events: none; }
 .img-wait { font-size: 12px; text-align: center; padding: 8px; }
+
+/* состояние серверов синхронизации */
+.links-state { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 4px 0 10px; }
+.link-st { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 999px; background: var(--panel-2, rgba(127,127,127,.12)); font-size: 12px; }
+.link-st i { width: 8px; height: 8px; border-radius: 50%; background: #999; }
+.link-st.online i { background: #2ecc71; }
+.link-st.connecting i { background: #f1c40f; }
+.link-st.error i { background: #e74c3c; }
+.link-st small { opacity: .7; }
+.btn.small { padding: 3px 8px; font-size: 12px; }
+.yt-cover.vsrc-rutube { background: linear-gradient(135deg, #0b1b2b, #00395a); }
+.yt-cover.vsrc-vk { background: linear-gradient(135deg, #0b1630, #0a3d91); }
+.yt-cover .v-site { position: absolute; left: 10px; top: 8px; color: #fff; font-weight: 700; font-size: 13px; text-shadow: 0 1px 3px #000a; }
+.yt-badge.vsrc-rutube { background: #00a1e7; }
+.yt-badge.vsrc-vk { background: #0077ff; }

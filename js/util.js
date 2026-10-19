@@ -145,29 +145,69 @@ export function timeAgo(ts) {
   return new Date(ts).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 }
 
-// ---------- YouTube ----------
-// Разбор ссылки YouTube: watch?v=, youtu.be/, shorts/, embed/, live/ + время старта (t=1m30s, t=90, start=90)
-export function parseYouTube(s) {
-  const t = String(s || '').trim();
-  const m = t.match(/^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?(?:[^\s#]*&)?v=|embed\/|shorts\/|live\/|v\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([\w-]{11})(\S*)$/i);
-  if (!m) return null;
-  let start = 0;
-  const tm = (m[2] || '').match(/[?&#](?:t|start)=([0-9hms]+)/);
-  if (tm) {
-    const v = tm[1];
-    if (/^\d+$/.test(v)) start = +v;
-    else { const p = v.match(/(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/); start = (+p[1] || 0) * 3600 + (+p[2] || 0) * 60 + (+p[3] || 0); }
+// ---------- видео: YouTube, RuTube, VK Видео ----------
+function parseTime(v) {
+  if (!v) return 0;
+  if (/^\d+$/.test(v)) return +v;
+  const p = v.match(/(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/);
+  return (+p[1] || 0) * 3600 + (+p[2] || 0) * 60 + (+p[3] || 0);
+}
+// Разбор ссылки на видео (или кода <iframe>): → { src: 'yt'|'rutube'|'vk', id, start, url, hash? }
+export function parseVideo(s) {
+  let t = String(s || '').trim();
+  const fr = t.match(/<iframe[^>]+src=["']([^"']+)["']/i); // вставили код для встраивания
+  if (fr) t = fr[1].replace(/&amp;/g, '&');
+  if (t.startsWith('//')) t = 'https:' + t;
+  if (/\s/.test(t)) return null;
+  const tm = t.match(/[?&#](?:t|start)=([0-9hms]+)/);
+  const start = tm ? parseTime(tm[1]) : 0;
+  let m = t.match(/^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?(?:[^\s#]*&)?v=|embed\/|shorts\/|live\/|v\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([\w-]{11})/i);
+  if (m) return { src: 'yt', id: m[1], start, url: t };
+  m = t.match(/^(?:https?:\/\/)?(?:www\.|m\.)?rutube\.ru\/(?:video|play\/embed|shorts|embed)\/(?:private\/)?([0-9a-f]{32})/i);
+  if (m) return { src: 'rutube', id: m[1], start, url: t };
+  m = t.match(/^(?:https?:\/\/)?(?:www\.|m\.)?(?:vk\.com|vk\.ru|vkvideo\.ru)\/video_ext\.php\?(\S+)$/i);
+  if (m) {
+    const q = new URLSearchParams(m[1]);
+    if (q.get('oid') && q.get('id')) return { src: 'vk', id: q.get('oid') + '_' + q.get('id'), hash: q.get('hash') || '', start, url: t };
   }
-  return { id: m[1], start, url: t };
+  m = t.match(/^(?:https?:\/\/)?(?:www\.|m\.)?(?:vk\.com|vk\.ru|vkvideo\.ru)\/\S*?(?:video|clip)(-?\d+_\d+)/i);
+  if (m) return { src: 'vk', id: m[1], hash: '', start, url: t };
+  return null;
 }
-// Название ролика (без ключей API, через noembed); при ошибке — null
+// Обратная совместимость: раньше поддерживался только YouTube
+export const parseYouTube = parseVideo;
+export const VIDEO_SITES = { yt: 'YouTube', rutube: 'RuTube', vk: 'VK Видео' };
+export function videoPageUrl(d) {
+  const src = d.src || 'yt';
+  if (src === 'rutube') return `https://rutube.ru/video/${d.id}/${d.start ? '?t=' + d.start : ''}`;
+  if (src === 'vk') return d.url && !/video_ext/.test(d.url) ? d.url : `https://vkvideo.ru/video${d.id}`;
+  return `https://www.youtube.com/watch?v=${d.id}${d.start ? '&t=' + d.start + 's' : ''}`;
+}
+export function videoEmbedUrl(d) {
+  const src = d.src || 'yt';
+  if (src === 'rutube') return `https://rutube.ru/play/embed/${d.id}?autoplay=1${d.start ? '&t=' + d.start : ''}`;
+  if (src === 'vk') {
+    const [oid, id] = d.id.split('_');
+    return `https://vk.com/video_ext.php?oid=${oid}&id=${id}&hd=2&autoplay=1${d.hash ? '&hash=' + d.hash : ''}${d.start ? '&t=' + d.start + 's' : ''}`;
+  }
+  return `https://www.youtube-nocookie.com/embed/${d.id}?autoplay=1&rel=0&playsinline=1${d.start ? '&start=' + d.start : ''}`;
+}
+// Название ролика (без ключей API); при ошибке — null
 export async function youTubeTitle(url) {
-  try {
-    const r = await fetch('https://noembed.com/embed?url=' + encodeURIComponent(url));
-    const j = await r.json();
-    return j.title || null;
-  } catch { return null; }
+  const v = parseVideo(url);
+  const tries = v?.src === 'rutube'
+    ? ['https://rutube.ru/api/video/' + v.id + '/?format=json', 'https://noembed.com/embed?url=' + encodeURIComponent(url)]
+    : ['https://noembed.com/embed?url=' + encodeURIComponent(url)];
+  for (const u of tries) {
+    try {
+      const r = await fetch(u);
+      const j = await r.json();
+      if (j.title) return j.title;
+    } catch {}
+  }
+  return null;
 }
+export const videoTitle = youTubeTitle;
 
 // ---------- картинки ----------
 // Большие фото уменьшаются и пережимаются (быстрее синхронизация и меньше места);

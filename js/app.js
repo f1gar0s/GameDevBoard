@@ -13,7 +13,7 @@ import { cardField, resolveList } from './card.js';
 import { exportGDD, exportEngine, exportBoardFile, readBoardFile, shareLink, readShared } from './export.js';
 import { lintDialogues } from './play.js';
 import { exportDialoguesDialog, exportTexts, lintFormat } from './dialogfmt.js';
-import { collab, connectRoom, shareBoard, leave, me, setMyName, onPresence, onState, trackCursor, roomLink, parseRoom, BROKERS, brokerSettings, saveBrokerSettings, syncNow } from './collab.js';
+import { collab, connectRoom, shareBoard, leave, me, setMyName, onPresence, onState, trackCursor, roomLink, parseRoom, BROKERS, brokerSettings, saveBrokerSettings, syncNow, redial } from './collab.js';
 
 const $ = (q) => document.querySelector(q);
 const home = $('#home'), editor = $('#editor');
@@ -159,7 +159,7 @@ function insertTemplate(t, at) {
 }
 function buildLibrary() {
   const lib = $('#library');
-  const BASIC = [['sticky', 'Стикер', '🗒'], ['text', 'Текст', 'T'], ['shape', 'Фигура', '◆'], ['frame', 'Фрейм', '▢'], ['video', 'Видео YouTube', '▶']];
+  const BASIC = [['sticky', 'Стикер', '🗒'], ['text', 'Текст', 'T'], ['shape', 'Фигура', '◆'], ['frame', 'Фрейм', '▢'], ['video', 'Видео', '▶']];
   const toolTile = (t) => h('button', {
     class: 'lib-tile', draggable: 'true', title: (t.desc ? t.desc + '. ' : '') + 'Клик — добавить, или перетащите на доску',
     onClick: () => {
@@ -171,14 +171,14 @@ function buildLibrary() {
     onDragstart: (e) => e.dataTransfer.setData('application/x-gdb', JSON.stringify({ tool: t.id })),
   }, h('span', { class: 'lt-i' }, t.icon), h('span', {}, t.name));
   const basicTile = ([type, label, icon]) => h('button', {
-    class: 'lib-tile', draggable: type === 'video' ? null : 'true', title: type === 'video' ? 'Или просто вставьте ссылку YouTube на доску (Ctrl+V)' : null,
+    class: 'lib-tile', draggable: type === 'video' ? null : 'true', title: type === 'video' ? 'YouTube, RuTube или VK Видео. Можно просто вставить ссылку на доску (Ctrl+V)' : null,
     onClick: async () => {
       const W = WIDGETS[type];
       if (type === 'video') {
-        const url = await prompt2('Ссылка на видео YouTube', '', 'https://www.youtube.com/watch?v=…');
+        const url = await prompt2('Ссылка на видео (YouTube, RuTube, VK Видео)', '', 'https://rutube.ru/video/…');
         if (!url) return;
         const it = addVideo(url, findFreeSpot(centerWorld(), W.w, W.h));
-        if (it) focusItem(it.id); else toast('Это не ссылка на YouTube', 'err');
+        if (it) focusItem(it.id); else toast('Не похоже на ссылку YouTube, RuTube или VK Видео', 'err');
         return;
       }
       const it = createItem(type, findFreeSpot(centerWorld(), W.w, W.h)); if (it) { focusItem(it.id); startEditing(it.id); }
@@ -351,7 +351,7 @@ function collabDialog() {
   const brokerBox = () => {
     const st = brokerSettings();
     const sel = h('select', { class: 'input' },
-      Object.entries(BROKERS).map(([k, v]) => h('option', { value: k, selected: st.id === k }, v.name)),
+      h('option', { value: 'auto', selected: st.id !== 'custom' }, 'Все публичные серверы сразу (рекомендуется)'),
       h('option', { value: 'custom', selected: st.id === 'custom' }, 'Свой брокер (wss://…)'));
     const url = h('input', { class: 'input mono', placeholder: 'wss://xxxx.s1.eu.hivemq.cloud:8884/mqtt', value: st.url || '' });
     const user = h('input', { class: 'input', placeholder: 'логин (если нужен)', value: st.username || '' });
@@ -360,8 +360,8 @@ function collabDialog() {
     const save = () => saveBrokerSettings({ id: sel.value, url: url.value.trim(), username: user.value.trim(), password: pass.value });
     sel.onchange = () => { custom.classList.toggle('hidden', sel.value !== 'custom'); save(); };
     url.onchange = user.onchange = pass.onchange = save;
-    return h('details', { class: 'broker-box' }, h('summary', {}, 'Сервер синхронизации: ' + (st.id === 'custom' ? 'свой' : BROKERS[st.id]?.name || 'EMQX')),
-      h('p', { class: 'muted small' }, 'Публичные MQTT-брокеры бесплатны и работают с GitHub Pages. Для надёжности можно указать свой (например, бесплатный HiveMQ Cloud). Логин и пароль своего брокера в ссылку не попадают — участники вводят их у себя.'),
+    return h('details', { class: 'broker-box' }, h('summary', {}, 'Сервер синхронизации: ' + (st.id === 'custom' ? 'свой' : 'все публичные')),
+      h('p', { class: 'muted small' }, `Доска подключается сразу к ${Object.keys(BROKERS).length} бесплатным серверам (${Object.values(BROKERS).map((b) => b.name.split(' ')[0]).join(', ')}). Если какой-то заблокирован у провайдера, работают остальные — VPN не нужен. Можно указать свой сервер (например, бесплатный HiveMQ Cloud); логин и пароль в ссылку не попадают.`),
       sel, custom);
   };
   const refresh = () => {
@@ -372,7 +372,8 @@ function collabDialog() {
       content.append(
         h('p', {}, 'Откройте доступ к этой доске по ссылке. Все, у кого есть ссылка, видят доску, курсоры и правки друг друга в реальном времени.'),
         h('ul', { class: 'tips' },
-          h('li', {}, 'Работает прямо на GitHub Pages — свой сервер не нужен.'),
+          h('li', {}, 'Работает прямо на GitHub Pages — свой сервер не нужен. Используется несколько серверов сразу, поэтому VPN не нужен.'),
+          h('li', {}, 'Между участниками устанавливается прямое соединение — правки и курсоры появляются мгновенно.'),
           h('li', {}, 'Доска хранится в «комнате» на сервере синхронизации: открыть ссылку можно в любое время, даже если вы офлайн.'),
           h('li', {}, 'Содержимое шифруется ключом из ссылки (AES-256). Сервер видит только зашифрованные данные.')),
         brokerBox(),
@@ -384,9 +385,15 @@ function collabDialog() {
     } else {
       const url = roomLink(collab.room);
       const inp = h('input', { class: 'input mono', value: url, readonly: true });
-      const st = collab.status === 'online' ? (collab.synced ? '🟢 Подключено, доска синхронизирована' : '🟢 Подключено, загружаем доску…') : collab.status === 'connecting' ? '🟡 Подключение…' : '🟠 Связь потеряна, переподключаемся…';
+      const st = collab.status === 'online' ? (collab.synced ? '🟢 Подключено, доска синхронизирована' : '🟢 Подключено, загружаем доску…') : collab.status === 'connecting' ? '🟡 Подключение…' : collab.direct ? '🟡 Серверы недоступны — правки идут напрямую между участниками' : '🟠 Связь потеряна, переподключаемся…';
       content.append(
         h('p', { class: 'collab-status' }, st, collab.error ? h('span', { class: 'muted small' }, ' · ' + collab.error) : null),
+        h('div', { class: 'links-state' },
+          collab.links.map((l) => h('span', { class: 'link-st ' + l.status, title: l.err || '' },
+            h('i'), l.name.split(' ')[0], l.status === 'online' ? h('small', {}, (l.rtt ?? '?') + ' мс') : l.status === 'error' ? h('small', {}, 'недоступен') : h('small', {}, '…'))),
+          h('span', { class: 'link-st ' + (collab.direct ? 'online' : 'idle'), title: 'Прямое соединение браузер↔браузер (WebRTC): правки идут без сервера' },
+            h('i'), '⚡ Напрямую', h('small', {}, collab.direct ? `${collab.direct} уч.` : collab.users.size > 1 ? 'устанавливается…' : 'нет участников')),
+          collab.links.some((l) => l.status === 'error') ? h('button', { class: 'btn small', onClick: () => { redial(); setTimeout(refresh, 300); } }, '↻ Проверить') : null),
         inp,
         h('div', { class: 'row gap' },
           h('button', { class: 'btn primary', onClick: () => { navigator.clipboard?.writeText(url); inp.select(); toast('Ссылка скопирована', 'ok'); } }, 'Скопировать ссылку'),
