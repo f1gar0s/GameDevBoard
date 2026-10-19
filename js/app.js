@@ -13,7 +13,7 @@ import { cardField, resolveList } from './card.js';
 import { exportGDD, exportEngine, exportBoardFile, readBoardFile, shareLink, readShared } from './export.js';
 import { lintDialogues } from './play.js';
 import { exportDialoguesDialog, exportTexts, lintFormat } from './dialogfmt.js';
-import { collab, host, join, leave, me, setMyName, onPresence, onInit, onState, trackCursor } from './collab.js';
+import { collab, connectRoom, shareBoard, leave, me, setMyName, onPresence, onState, trackCursor, roomLink, parseRoom, BROKERS, brokerSettings, saveBrokerSettings, syncNow } from './collab.js';
 
 const $ = (q) => document.querySelector(q);
 const home = $('#home'), editor = $('#editor');
@@ -44,11 +44,11 @@ async function renderHome() {
   const boardCard = (b) => h('div', { class: 'bcard', onClick: () => (location.hash = '#/b/' + b.id) },
     thumb(b),
     h('div', { class: 'bcard-body' },
-      h('div', { class: 'bcard-name' }, b.name),
+      h('div', { class: 'bcard-name' }, b.room ? h('span', { class: 'room-badge', title: 'Общая доска (совместный доступ)' }, '🌐 ') : null, b.name),
       h('div', { class: 'bcard-meta' }, `${Object.keys(b.items || {}).length} элементов · ${timeAgo(b.updated)}`)),
     h('div', { class: 'bcard-actions' },
       h('button', { title: 'Переименовать', onClick: async (e) => { e.stopPropagation(); const n = await prompt2('Название доски', b.name); if (n) { b.name = n; await DB.put(b); renderHome(); } } }, '✎'),
-      h('button', { title: 'Дублировать', onClick: async (e) => { e.stopPropagation(); const c = structuredClone(b); c.id = newBoard().id; c.name += ' (копия)'; c.updated = Date.now(); await DB.put(c); renderHome(); } }, '⧉'),
+      h('button', { title: 'Дублировать', onClick: async (e) => { e.stopPropagation(); const c = structuredClone(b); delete c.room; c.id = newBoard().id; c.name += ' (копия)'; c.updated = Date.now(); await DB.put(c); renderHome(); } }, '⧉'),
       h('button', { title: 'Скачать файл', onClick: (e) => { e.stopPropagation(); exportBoardFile(b); } }, '⤓'),
       h('button', { title: 'Удалить', class: 'danger', onClick: (e) => { e.stopPropagation(); confirmDelete(b); } }, '🗑')));
   const features = [
@@ -59,7 +59,7 @@ async function renderHome() {
     ['🗺', 'Генератор карт 2D', 'Средневековая или современная карта по зерну, экспорт PNG'],
     ['🖌', 'Холст со слоями', 'Кисть, линии, фигуры, слои с перетаскиванием, экспорт PNG'],
     ['🎮', 'Экспорт в движок', 'JSON для Unity / Godot, диалоги по файлам и GDD в Markdown'],
-    ['👥', 'Совместная работа', 'Курсоры и правки участников в реальном времени, без сервера'],
+    ['👥', 'Совместный доступ', 'Доска по ссылке прямо на GitHub Pages: правки и курсоры в реальном времени, шифрование']
   ];
   home.replaceChildren(
     h('div', { class: 'home-wrap' },
@@ -325,38 +325,71 @@ function renderOverview() {
 // ---------- совместная работа ----------
 function renderPresence(users) {
   const p = $('#presence');
-  p.replaceChildren(...users.slice(0, 6).map((u) => h('span', { class: 'avatar-dot' + (u.id === me.id ? ' me' : ''), style: { background: u.color }, title: u.name + (u.id === me.id ? ' (вы)' : '') }, (u.name || '?')[0].toUpperCase())),
-    users.length > 6 ? h('span', { class: 'avatar-dot more' }, '+' + (users.length - 6)) : null);
-  $('#btn-collab').classList.toggle('live', collab.active);
+  const list = collab.active ? users : [];
+  p.replaceChildren(...list.slice(0, 6).map((u) => h('span', { class: 'avatar-dot' + (u.id === me.id ? ' me' : ''), style: { background: u.color }, title: u.name + (u.id === me.id ? ' (вы)' : '') }, (u.name || '?')[0].toUpperCase())),
+    list.length > 6 ? h('span', { class: 'avatar-dot more' }, '+' + (list.length - 6)) : null);
+  const b = $('#btn-collab');
+  b.classList.toggle('live', collab.active && collab.status === 'online');
+  b.classList.toggle('wait', collab.active && collab.status !== 'online');
+  b.title = !collab.active ? 'Совместный доступ' : collab.status === 'online' ? 'Совместный доступ: подключено' : 'Совместный доступ: подключение…';
 }
+let collabRefresh = null;
 function collabDialog() {
   const nameInp = h('input', { class: 'input', value: me.name, maxlength: 24 });
-  nameInp.onchange = () => setMyName(nameInp.value.trim());
+  nameInp.onchange = () => { setMyName(nameInp.value.trim()); renderPresence([...collab.users.values()]); };
   const content = h('div', { class: 'collab' });
+  const brokerBox = () => {
+    const st = brokerSettings();
+    const sel = h('select', { class: 'input' },
+      Object.entries(BROKERS).map(([k, v]) => h('option', { value: k, selected: st.id === k }, v.name)),
+      h('option', { value: 'custom', selected: st.id === 'custom' }, 'Свой брокер (wss://…)'));
+    const url = h('input', { class: 'input mono', placeholder: 'wss://xxxx.s1.eu.hivemq.cloud:8884/mqtt', value: st.url || '' });
+    const user = h('input', { class: 'input', placeholder: 'логин (если нужен)', value: st.username || '' });
+    const pass = h('input', { class: 'input', type: 'password', placeholder: 'пароль', value: st.password || '' });
+    const custom = h('div', { class: 'custom-broker' + (st.id === 'custom' ? '' : ' hidden') }, url, h('div', { class: 'row gap tight' }, user, pass));
+    const save = () => saveBrokerSettings({ id: sel.value, url: url.value.trim(), username: user.value.trim(), password: pass.value });
+    sel.onchange = () => { custom.classList.toggle('hidden', sel.value !== 'custom'); save(); };
+    url.onchange = user.onchange = pass.onchange = save;
+    return h('details', { class: 'broker-box' }, h('summary', {}, 'Сервер синхронизации: ' + (st.id === 'custom' ? 'свой' : BROKERS[st.id]?.name || 'EMQX')),
+      h('p', { class: 'muted small' }, 'Публичные MQTT-брокеры бесплатны и работают с GitHub Pages. Для надёжности можно указать свой (например, бесплатный HiveMQ Cloud). Логин и пароль своего брокера в ссылку не попадают — участники вводят их у себя.'),
+      sel, custom);
+  };
   const refresh = () => {
+    if (!content.isConnected && collabRefresh === refresh) collabRefresh = null;
+    const b = store.board;
     content.replaceChildren(h('label', { class: 'kv-row' }, 'Ваше имя', nameInp));
     if (!collab.active) {
       content.append(
-        h('p', {}, 'Пригласите команду: участники увидят доску, курсоры и правки друг друга в реальном времени. Соединение напрямую между браузерами (WebRTC), доска остаётся у вас.'),
-        h('button', { class: 'btn primary', onClick: async (e) => {
+        h('p', {}, 'Откройте доступ к этой доске по ссылке. Все, у кого есть ссылка, видят доску, курсоры и правки друг друга в реальном времени.'),
+        h('ul', { class: 'tips' },
+          h('li', {}, 'Работает прямо на GitHub Pages — свой сервер не нужен.'),
+          h('li', {}, 'Доска хранится в «комнате» на сервере синхронизации: открыть ссылку можно в любое время, даже если вы офлайн.'),
+          h('li', {}, 'Содержимое шифруется ключом из ссылки (AES-256). Сервер видит только зашифрованные данные.')),
+        brokerBox(),
+        h('div', { class: 'row gap' }, h('button', { class: 'btn primary', onClick: async (e) => {
           e.target.disabled = true; e.target.textContent = 'Подключение…';
-          try { await host(); refresh(); } catch (err) { toast('Не удалось начать сессию: ' + (err.message || err.type), 'err'); e.target.disabled = false; e.target.textContent = 'Начать сессию'; }
-        } }, 'Начать сессию'),
-        h('p', { class: 'muted small' }, 'Бета: работает в большинстве сетей; в строгих корпоративных сетях соединение может не установиться — тогда используйте ссылку-снимок.'));
+          try { await shareBoard(); } catch (err) { toast('Не удалось открыть доступ: ' + err.message, 'err'); }
+          refresh();
+        } }, b?.room ? 'Подключиться снова' : '🔓 Открыть совместный доступ')));
     } else {
-      const url = location.origin + location.pathname + '#/join/' + collab.code;
+      const url = roomLink(collab.room);
       const inp = h('input', { class: 'input mono', value: url, readonly: true });
+      const st = collab.status === 'online' ? (collab.synced ? '🟢 Подключено, доска синхронизирована' : '🟢 Подключено, загружаем доску…') : collab.status === 'connecting' ? '🟡 Подключение…' : '🟠 Связь потеряна, переподключаемся…';
       content.append(
-        h('p', {}, collab.role === 'host' ? '🟢 Сессия активна. Отправьте ссылку участникам. Пока вкладка открыта, доска доступна им.' : '🟢 Вы подключены к сессии.'),
+        h('p', { class: 'collab-status' }, st, collab.error ? h('span', { class: 'muted small' }, ' · ' + collab.error) : null),
         inp,
         h('div', { class: 'row gap' },
-          h('button', { class: 'btn primary', onClick: () => { navigator.clipboard?.writeText(url); toast('Ссылка скопирована', 'ok'); } }, 'Скопировать ссылку'),
-          h('button', { class: 'btn', onClick: () => { leave(); refresh(); } }, collab.role === 'host' ? 'Завершить сессию' : 'Выйти')),
-        h('p', { class: 'muted small' }, `Участники: ${[...collab.users.values()].map((u) => u.name).join(', ')}`));
+          h('button', { class: 'btn primary', onClick: () => { navigator.clipboard?.writeText(url); inp.select(); toast('Ссылка скопирована', 'ok'); } }, 'Скопировать ссылку'),
+          h('button', { class: 'btn', title: 'Сохранить текущее состояние в комнате прямо сейчас', onClick: () => syncNow() }, '⟳ Сохранить'),
+          h('button', { class: 'btn', title: 'Перестать синхронизировать эту доску (комната останется у других)', onClick: () => { leave(false, true); refresh(); } }, 'Отключить')),
+        h('p', { class: 'warn small' }, 'Ссылка — это и адрес, и ключ: любой, у кого она есть, может редактировать доску.'),
+        h('h4', {}, `Сейчас на доске: ${collab.users.size}`),
+        h('div', { class: 'people' }, [...collab.users.values()].map((u) => h('span', { class: 'person' }, h('i', { style: { background: u.color } }), u.name + (u.id === me.id ? ' (вы)' : '')))));
     }
   };
+  collabRefresh = refresh;
   refresh();
-  modal('👥 Совместная работа', content);
+  modal('👥 Совместный доступ', content, { onClose: () => { collabRefresh = null; } });
 }
 
 // ---------- экспорт меню ----------
@@ -443,6 +476,8 @@ async function openBoard(id) {
   document.title = b.name + ' — GameDev Board';
   $('#save-state').textContent = '';
   if (needFit) requestAnimationFrame(() => fitAll(false));
+  if (b.room) connectRoom(b).catch((e) => toast('Совместный доступ: ' + e.message, 'err'));
+  else if (collab.active) leave();
   if (!localStorage.getItem('gdb-seen-hint')) {
     try { localStorage.setItem('gdb-seen-hint', '1'); } catch {}
     setTimeout(() => toast('Совет: ＋ Инструменты слева — карточки с компонентами, диалоги, баги, карты. «?» внизу — горячие клавиши', 'info', 6000), 600);
@@ -461,21 +496,19 @@ async function route() {
     } catch (e) { console.error(e); toast('Ссылка повреждена', 'err'); location.hash = '#/'; }
     return;
   }
-  if ((m = hsh.match(/^#\/join\/(\w+)/))) {
-    if (collab.active) leave();
-    showScreen('home');
-    home.replaceChildren(h('div', { class: 'joining' }, h('span', { class: 'logo-mark big spin' }), h('p', {}, 'Подключаемся к сессии…')));
+  if ((m = hsh.match(/^#\/room\/([\w.-]+)/))) {
     try {
-      const b = await join(m[1]);
-      await DB.put(b);
-      history.replaceState(null, '', '#/b/' + b.id);
-      store.board = null;
-      await openBoard(b.id);
-      toast('Вы в сессии совместной работы', 'ok');
-    } catch (e) {
-      toast('Не удалось подключиться: ' + (e.message || e.type || 'ошибка'), 'err', 5000);
-      location.hash = '#/';
-    }
+      const room = parseRoom(m[1]);
+      const all = await DB.all();
+      let b = all.find((x) => x.room?.id === room.id);
+      if (!b) {
+        b = newBoard('Общая доска');
+        b.id = 'r_' + room.id;
+        b.room = room;
+        await DB.put(b);
+      }
+      location.replace('#/b/' + b.id);
+    } catch (e) { toast('Ссылка на общую доску повреждена', 'err'); location.hash = '#/'; }
     return;
   }
   if (collab.active) leave();
@@ -495,12 +528,8 @@ buildLibrary();
 setupLibraryDrop();
 setupTopbar();
 trackCursor($('#viewport'));
-onPresence(renderPresence);
-onState(() => renderPresence([...collab.users.values()]));
-onInit(async (b) => {
-  // гость получил актуальную доску от хоста (в том числе при переподключении)
-  if (store.board && store.board.id === b.id) store.load(b);
-});
+onPresence((u) => { renderPresence(u); collabRefresh?.(); });
+onState(() => { renderPresence([...collab.users.values()]); collabRefresh?.(); });
 window.addEventListener('hashchange', route);
 window.addEventListener('beforeunload', () => { store.saveNow?.(); });
 route();

@@ -5,7 +5,8 @@ import { store } from './store.js';
 import { getComponent, allComponents, callWithBase } from './registry.js';
 import * as lib from './lib.js';
 import { focusItem } from './canvas.js';
-import { liveEnv, TOOLS } from './tools.js';
+import { liveEnv, TOOLS, makeCard } from './tools.js';
+import { findFreeSpot } from './canvas.js';
 
 export const openSettings = new Set(); // id компонентов с открытой шестерёнкой
 let addMenuFor = null; // id карточки с открытым меню «+ Компонент»
@@ -40,6 +41,19 @@ export function dropdownEl(ref, value, onChange, { placeholder = '— не вы�
   sel.addEventListener('change', () => onChange(sel.value || null));
   return h('span', { class: 'dd-wrap' + (compact ? ' compact' : ''), style: { '--oc': opt?.color || 'transparent' } },
     h('i', { class: 'dd-dot' }), sel);
+}
+
+// все компоненты данного типа на доске (например, все предметы для таблицы лута)
+export function compsOnBoard(type) {
+  const out = [];
+  for (const it of Object.values(store.items)) {
+    if (it.type !== 'card') continue;
+    for (const c of it.data.components || []) if (c.type === type) out.push({ ref: { card: it.id, comp: c.id }, card: it, data: c.data });
+  }
+  return out;
+}
+export function resolveComp(ref) {
+  return store.item(ref?.card)?.data.components?.find((x) => x.id === ref.comp) || null;
 }
 
 // значение поля карточки по подписи компонента (для обзора, канбана, экспорта)
@@ -97,6 +111,15 @@ function makeCtx(cardIt, comp, api) {
     focusItem,
     frames: () => Object.values(store.items).filter((i) => i.type === 'frame').sort((a, b) => a.y - b.y || a.x - b.x),
     lists: listsOnBoard, resolveList, optionOf, dropdown: dropdownEl,
+    compsOnBoard, resolveComp,
+    // создать рядом карточку инструмента (например, «Предмет»)
+    createTool: (toolId, o = {}) => {
+      const near = store.item(cardId);
+      const p = findFreeSpot({ x: near.x + near.w + 60 + 150, y: near.y + 120 }, 300, 260);
+      const card = makeCard(toolId, p, liveEnv(near), { z: store.maxZ() + 1, ...o });
+      store.upsert(card);
+      return card;
+    },
     ensureList: (title, options) => liveEnv(store.item(cardId)).ensureList(title, options),
     settingsOpen: openSettings.has(compId),
     toggleSettings: () => { openSettings.has(compId) ? openSettings.delete(compId) : openSettings.add(compId); api.rerender(); },
@@ -229,6 +252,12 @@ export const CARD = {
       try { out.push(...(def?.deps?.(c.data) || [])); } catch {}
     }
     return out.filter(Boolean);
+  },
+  // типы компонентов, за которыми следит карточка (перерисовка при их изменении на любой карточке)
+  watch(it) {
+    const out = new Set();
+    for (const c of it.data.components || []) for (const t of getComponent(c.type)?.watch || []) out.add(t);
+    return [...out];
   },
   render(it, api) {
     const d = it.data;

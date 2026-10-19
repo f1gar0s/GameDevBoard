@@ -120,6 +120,8 @@ function renderKey(it) {
   let k = JSON.stringify(it.data) + '|' + it.w + '|' + it.h;
   if (it.type === 'dialogue') k += '|' + store.outgoing(it.id).map((l) => l.label + l.to + (l.cond || '') + (l.actions || '')).join(',') + '|' + store.incoming(it.id).length;
   if (it.type === 'image' || it.type === 'sprite') k += '|' + (store.board.assets[it.data.asset] ? 1 : 0);
+  const watch = WIDGETS[it.type]?.watch?.(it);
+  if (watch?.length) k += '|' + watchSig(watch);
   const deps = WIDGETS[it.type]?.deps?.(it);
   if (deps?.length) k += '|' + deps.map((d) => { const x = store.item(d); return x ? JSON.stringify(x.data) + (x.data.title || '') : '∅'; }).join('|');
   return k;
@@ -146,6 +148,19 @@ const sizeObs = typeof ResizeObserver !== 'undefined' ? new ResizeObserver((entr
     }
   }
 }) : null;
+function watchSig(types) {
+  let sig = '';
+  for (const x of Object.values(store.items)) if (x.type === 'card') for (const c of x.data.components || []) if (types.includes(c.type)) sig += x.id + c.id + JSON.stringify(c.data) + ';';
+  return sig;
+}
+// карточки, следящие за типами компонентов (types = null — за любыми)
+function remountWatchers(types) {
+  for (const it of Object.values(store.items)) {
+    if (it.type !== 'card') continue;
+    const w = WIDGETS.card.watch(it);
+    if (w.length && (!types || w.some((t) => types.includes(t)))) mountItem(it);
+  }
+}
 // элементы, которые надо перерисовать, когда меняется карточка id (например, список вариантов)
 function remountDependents(id) {
   for (const it of Object.values(store.items)) {
@@ -997,6 +1012,7 @@ export function initCanvas() {
     } else {
       mountItem(it);
       if (it.type === 'card' || it.type === 'frame') remountDependents(it.id);
+      if (it.type === 'card') remountWatchers((it.data.components || []).map((c) => c.type));
       // списки, на которые ссылается карточка, обновляют счётчик «используется»
       for (const d of WIDGETS[it.type]?.deps?.(it) || []) { const x = store.item(d); if (x?.type === 'card') mountItem(x, !nodes.get(d)?.el.contains(document.activeElement)); }
     }
@@ -1007,6 +1023,7 @@ export function initCanvas() {
     sizeObs?.unobserve(nodes.get(id)?.el || document.body);
     unmountItem(id);
     remountDependents(id);
+    remountWatchers(null);
     if (sel.delete(id)) updateSelUI(true);
   });
   store.on('link', (l) => { renderLink(l); rerenderDialogue(l.from); rerenderDialogue(l.to); if (selLink === l.id) positionCtxbar(); });

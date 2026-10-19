@@ -1,4 +1,7 @@
-// Таблица лута: веса и шансы. Редкость каждой строки — выпадающий список из карточки-списка «Редкость».
+// Таблица лута: веса и шансы. Строка — предмет с доски (выпадающий список всех «Предметов») или свой текст.
+// Редкость строки — выпадающий список из карточки-списка «Редкость».
+const itemName = (r, x) => x.store.item(r.item?.card)?.data.components?.find((c) => c.id === r.item.comp)?.data.name ?? r.name;
+
 export default {
   type: 'loottable',
   name: 'Таблица лута',
@@ -7,6 +10,7 @@ export default {
   openOnAdd: true,
   defaults: () => ({ title: 'Сундук', list: null, rows: [{ name: 'Золото x10', w: 50, opt: null }, { name: 'Зелье', w: 30, opt: null }] }),
   deps: (d) => [d.list?.card],
+  watch: ['item'], // перерисовка, когда на доске появляется, меняется или удаляется предмет
 
   render(ctx) {
     const { h, data: d } = ctx;
@@ -18,15 +22,48 @@ export default {
     const bars = rows.map(() => h('i'));
     const refresh = () => rows.forEach((r, i) => { const p = (Math.max(0, +r.w || 0) / weight()) * 100; pcts[i].textContent = p.toFixed(1) + '%'; bars[i].style.width = p + '%'; });
     const color = (r) => ctx.optionOf(d.list, r.opt)?.color || '#9ca3af';
+    const items = ctx.compsOnBoard('item');
+    const linked = (r) => (r.item ? ctx.resolveComp(r.item) : null);
+    const nameOf = (r) => linked(r)?.data.name ?? r.name;
+    // вариант редкости из списка, совпадающий с редкостью предмета
+    const rarityOpt = (itemData) => {
+      const want = ctx.lib.RARITY[itemData.rarity]?.name?.toLowerCase();
+      return ctx.resolveList(d.list)?.items.find((o) => o.text.toLowerCase() === want)?.id || null;
+    };
+    const itemSelect = (r, i) => {
+      const cur = r.item ? `${r.item.card}|${r.item.comp}` : '';
+      const sel = h('select', { class: 'f sel item-pick', title: 'Предмет с доски' },
+        h('option', { value: '' }, '✎ свой текст'),
+        items.length ? h('optgroup', { label: 'Предметы на доске' }, items.map((x) => h('option', { value: `${x.ref.card}|${x.ref.comp}`, selected: cur === `${x.ref.card}|${x.ref.comp}` }, `${x.data.icon || '▪'} ${x.data.name || 'Без названия'}`))) : null,
+        h('option', { value: '__new' }, '+ создать новый предмет'));
+      if (r.item && !linked(r)) sel.prepend(h('option', { value: cur, selected: true }, '⚠ предмет удалён'));
+      sel.onchange = () => {
+        if (sel.value === '__new') {
+          ctx.begin();
+          const card = ctx.createTool('item', { title: r.name || 'Новый предмет', data: { name: r.name || 'Новый предмет' } });
+          const comp = card.data.components[0];
+          ctx.set({ rows: rows.map((x, j) => (j === i ? { ...x, item: { card: card.id, comp: comp.id }, name: comp.data.name, opt: rarityOpt(comp.data) || x.opt } : x)) });
+          ctx.toast('Предмет создан рядом с таблицей', 'ok');
+          return;
+        }
+        if (!sel.value) { ctx.change({ rows: rows.map((x, j) => (j === i ? { ...x, item: null, name: nameOf(x) } : x)) }); return; }
+        const [card, comp] = sel.value.split('|');
+        const it = items.find((x) => x.ref.card === card && x.ref.comp === comp);
+        ctx.change({ rows: rows.map((x, j) => (j === i ? { ...x, item: { card, comp }, name: it?.data.name || x.name, opt: (it && rarityOpt(it.data)) || x.opt } : x)) });
+      };
+      return sel;
+    };
     const rowsEl = h('div', { class: 'loot-rows' }, rows.map((r, i) => {
-      const nm = h('input', { class: 'f', value: r.name });
+      const nm = linked(r)
+        ? h('button', { class: 'item-link', title: 'Перейти к предмету', onClick: () => ctx.focusItem(r.item.card) }, `${linked(r).data.icon || ''} ${linked(r).data.name}`)
+        : h('input', { class: 'f', value: r.name, placeholder: 'Название' });
       const w = h('input', { class: 'f num', type: 'number', min: 0, value: r.w });
       nm.onfocus = w.onfocus = () => ctx.begin();
-      nm.oninput = () => { rows[i].name = nm.value; ctx.live({ rows }); };
+      if (nm.tagName === 'INPUT') nm.oninput = () => { rows[i].name = nm.value; ctx.live({ rows }); };
       w.oninput = () => { rows[i].w = +w.value; ctx.live({ rows }); refresh(); };
       const dd = d.list ? ctx.dropdown(d.list, r.opt, (v) => ctx.change({ rows: rows.map((x, j) => (j === i ? { ...x, opt: v } : x)) }), { compact: true, placeholder: '—' }) : h('span');
       return h('div', { class: 'loot-row2', style: { '--c': color(r) } },
-        h('div', { class: 'lr-top' }, nm, w, h('button', { class: 'x', onClick: () => ctx.change({ rows: rows.filter((_, j) => j !== i) }) }, '×')),
+        h('div', { class: 'lr-top' }, itemSelect(r, i), nm, w, h('button', { class: 'x', onClick: () => ctx.change({ rows: rows.filter((_, j) => j !== i) }) }, '×')),
         h('div', { class: 'lr-bot' }, dd, h('div', { class: 'lbar', style: { '--c': color(r) } }, bars[i], pcts[i], sims[i])));
     }));
     refresh();
@@ -44,7 +81,7 @@ export default {
         h('button', { class: 'play-btn', onClick: () => {
           const r = roll();
           if (!r) return;
-          out.replaceChildren(h('span', { class: 'drop', style: { color: color(r) } }, '✦ ', r.name));
+          out.replaceChildren(h('span', { class: 'drop', style: { color: color(r) } }, '✦ ', nameOf(r)));
           out.classList.remove('pop'); void out.offsetWidth; out.classList.add('pop');
         } }, '🎲 Бросок'),
         h('button', { class: 'ghost-btn', title: 'Сравнить фактическую частоту с ожидаемой', onClick: () => {
@@ -69,12 +106,14 @@ export default {
       } }, 'Использовать стандартный «Редкость»'));
   },
   text: (d) => [d.title, ...(d.rows || []).map((r) => r.name)].join(' '),
+  // имя строки: актуальное имя связанного предмета или свой текст
+
   exportMd: (d, x) => {
     const tot = (d.rows || []).reduce((a, r) => a + Math.max(0, +r.w || 0), 0) || 1;
-    return `**🎲 ${d.title}**\n\n| Предмет | Редкость | Вес | Шанс |\n|---|---|---|---|\n${(d.rows || []).map((r) => `| ${r.name} | ${x.optionOf(d.list, r.opt)?.text || '—'} | ${r.w} | ${((Math.max(0, +r.w || 0) / tot) * 100).toFixed(1)}% |`).join('\n')}`;
+    return `**🎲 ${d.title}**\n\n| Предмет | Редкость | Вес | Шанс |\n|---|---|---|---|\n${(d.rows || []).map((r) => `| ${itemName(r, x)} | ${x.optionOf(d.list, r.opt)?.text || '—'} | ${r.w} | ${((Math.max(0, +r.w || 0) / tot) * 100).toFixed(1)}% |`).join('\n')}`;
   },
   exportJson: (d, x) => {
     const tot = (d.rows || []).reduce((a, r) => a + Math.max(0, +r.w || 0), 0) || 1;
-    return { title: d.title, entries: (d.rows || []).map((r) => ({ name: r.name, weight: r.w, rarity: x.optionOf(d.list, r.opt)?.text ?? null, chance: Math.round((Math.max(0, +r.w || 0) / tot) * 10000) / 10000 })) };
+    return { title: d.title, entries: (d.rows || []).map((r) => ({ name: itemName(r, x), item: r.item?.card || undefined, weight: r.w, rarity: x.optionOf(d.list, r.opt)?.text ?? null, chance: Math.round((Math.max(0, +r.w || 0) / tot) * 10000) / 10000 })) };
   },
 };

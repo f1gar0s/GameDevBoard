@@ -14,7 +14,8 @@ const compJson = (c) => { const def = getComponent(c.type); try { return def?.ex
 const slug = (s) => (s || 'board').toLowerCase().replace(/[^\p{L}\d]+/gu, '-').replace(/^-|-$/g, '').slice(0, 40) || 'board';
 
 export function exportBoardFile(board = store.board) {
-  download(`${slug(board.name)}.gdboard.json`, JSON.stringify({ format: 'gdboard', version: 1, board }, null, 0));
+  const { room, ...clean } = board; // ключ совместного доступа в файл не попадает
+  download(`${slug(board.name)}.gdboard.json`, JSON.stringify({ format: 'gdboard', version: 1, board: clean }, null, 0));
 }
 
 export function normalizeImported(obj) {
