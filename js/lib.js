@@ -196,3 +196,21 @@ export async function pickImage(cb) {
   inp.click();
 }
 
+
+// ---------- видео YouTube (общая отрисовка для элемента «Видео» и компонента) ----------
+// Сначала обложка с кнопкой ▶ (не грузит плеер и не мешает таскать элемент), по клику — встроенный плеер.
+export const playingVideos = new Set();
+export function renderYouTube(d, key, rerender) {
+  if (!d.id) return h('div', { class: 'yt-empty muted' }, 'Нет ссылки на видео');
+  if (playingVideos.has(key)) {
+    const src = `https://www.youtube-nocookie.com/embed/${d.id}?autoplay=1&rel=0&playsinline=1${d.start ? '&start=' + d.start : ''}`;
+    return h('div', { class: 'yt-frame' },
+      h('iframe', { src, title: d.title || 'YouTube', allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin', frameborder: '0' }),
+      h('button', { class: 'yt-stop no-drag', title: 'Остановить и показать обложку', onClick: (e) => { e.stopPropagation(); playingVideos.delete(key); rerender(); } }, '■'));
+  }
+  return h('div', { class: 'yt-cover' },
+    h('img', { src: `https://i.ytimg.com/vi/${d.id}/hqdefault.jpg`, alt: d.title || '', draggable: 'false' }),
+    h('button', { class: 'yt-play no-drag', title: 'Смотреть прямо на доске', onClick: (e) => { e.stopPropagation(); playingVideos.add(key); rerender(); } },
+      s('svg', { viewBox: '0 0 68 48', width: 68, height: 48 }, s('path', { d: 'M66.5 7.7c-.8-2.9-3-5.2-5.9-6C55.3.3 34 .3 34 .3s-21.3 0-26.6 1.4c-2.9.8-5.1 3.1-5.9 6C.1 13 .1 24 .1 24s0 11 1.4 16.3c.8 2.9 3 5.2 5.9 6C12.7 47.7 34 47.7 34 47.7s21.3 0 26.6-1.4c2.9-.8 5.1-3.1 5.9-6C67.9 35 67.9 24 67.9 24s0-11-1.4-16.3z', fill: '#f00' }), s('path', { d: 'M27 34V14l18 10z', fill: '#fff' }))),
+    d.start ? h('span', { class: 'yt-time' }, `с ${Math.floor(d.start / 60)}:${String(d.start % 60).padStart(2, '0')}`) : null);
+}

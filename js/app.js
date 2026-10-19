@@ -3,7 +3,7 @@ import { store, DB, newBoard } from './store.js';
 import { h, s, toast, modal, prompt2, timeAgo, debounce, download } from './util.js';
 import {
   initCanvas, setTool, onToolChange, tool, pen, view, onViewChange, zoomBy, setZoom, fitAll, focusItem,
-  createItem, centerWorld, pasteClip, startEditing, onSelection, sel, bboxOf, findFreeSpot, createTool,
+  createItem, centerWorld, pasteClip, startEditing, onSelection, sel, bboxOf, findFreeSpot, createTool, addVideo,
 } from './canvas.js';
 import { WIDGETS, textOf, titleOf, ACCENT_COLORS, parseSeries } from './widgets.js';
 import { TEMPLATES, buildTemplate } from './templates.js';
@@ -159,7 +159,7 @@ function insertTemplate(t, at) {
 }
 function buildLibrary() {
   const lib = $('#library');
-  const BASIC = [['sticky', 'Стикер', '🗒'], ['text', 'Текст', 'T'], ['shape', 'Фигура', '◆'], ['frame', 'Фрейм', '▢']];
+  const BASIC = [['sticky', 'Стикер', '🗒'], ['text', 'Текст', 'T'], ['shape', 'Фигура', '◆'], ['frame', 'Фрейм', '▢'], ['video', 'Видео YouTube', '▶']];
   const toolTile = (t) => h('button', {
     class: 'lib-tile', draggable: 'true', title: (t.desc ? t.desc + '. ' : '') + 'Клик — добавить, или перетащите на доску',
     onClick: () => {
@@ -171,8 +171,18 @@ function buildLibrary() {
     onDragstart: (e) => e.dataTransfer.setData('application/x-gdb', JSON.stringify({ tool: t.id })),
   }, h('span', { class: 'lt-i' }, t.icon), h('span', {}, t.name));
   const basicTile = ([type, label, icon]) => h('button', {
-    class: 'lib-tile', draggable: 'true',
-    onClick: () => { const W = WIDGETS[type]; const it = createItem(type, findFreeSpot(centerWorld(), W.w, W.h)); if (it) { focusItem(it.id); startEditing(it.id); } },
+    class: 'lib-tile', draggable: type === 'video' ? null : 'true', title: type === 'video' ? 'Или просто вставьте ссылку YouTube на доску (Ctrl+V)' : null,
+    onClick: async () => {
+      const W = WIDGETS[type];
+      if (type === 'video') {
+        const url = await prompt2('Ссылка на видео YouTube', '', 'https://www.youtube.com/watch?v=…');
+        if (!url) return;
+        const it = addVideo(url, findFreeSpot(centerWorld(), W.w, W.h));
+        if (it) focusItem(it.id); else toast('Это не ссылка на YouTube', 'err');
+        return;
+      }
+      const it = createItem(type, findFreeSpot(centerWorld(), W.w, W.h)); if (it) { focusItem(it.id); startEditing(it.id); }
+    },
     onDragstart: (e) => e.dataTransfer.setData('application/x-gdb', JSON.stringify({ type })),
   }, h('span', { class: 'lt-i' }, icon), h('span', {}, label));
   const groups = [];
@@ -327,7 +337,7 @@ function renderPresence(users) {
   const p = $('#presence');
   const list = collab.active ? users : [];
   p.replaceChildren(...list.slice(0, 6).map((u) => h('span', { class: 'avatar-dot' + (u.id === me.id ? ' me' : ''), style: { background: u.color }, title: u.name + (u.id === me.id ? ' (вы)' : '') }, (u.name || '?')[0].toUpperCase())),
-    list.length > 6 ? h('span', { class: 'avatar-dot more' }, '+' + (list.length - 6)) : null);
+    ...(list.length > 6 ? [h('span', { class: 'avatar-dot more' }, '+' + (list.length - 6))] : []));
   const b = $('#btn-collab');
   b.classList.toggle('live', collab.active && collab.status === 'online');
   b.classList.toggle('wait', collab.active && collab.status !== 'online');
@@ -435,7 +445,7 @@ function showHelp() {
   const rows = [
     ['V / H', 'Выделение / рука'], ['Пробел + тянуть, ПКМ, колесо', 'Перемещение по доске'], ['Колесо / Ctrl + колесо', 'Масштаб'],
     ['N, T, R, F', 'Стикер, текст, фигура, фрейм'], ['C', 'Связь: тянуть от элемента к элементу'], ['P / E', 'Карандаш / ластик'],
-    ['Двойной клик', 'Редактировать текст / новый стикер'], ['⟶ у выделенного', 'Протянуть связь (в пустоту — создаст новый элемент)'],
+    ['Двойной клик', 'Редактировать текст'], ['⟶ у выделенного', 'Протянуть связь (в пустоту — создаст новый элемент)'],
     ['Ctrl+C / V / D', 'Копировать / вставить / дублировать'], ['Ctrl+Z / Ctrl+Shift+Z', 'Отменить / повторить'],
     ['Del', 'Удалить'], ['Стрелки (+Shift)', 'Сдвиг на 1 (10) px'], ['Shift+1 / Ctrl+0', 'Показать всё / 100%'], ['Shift при ресайзе', 'Сохранить пропорции'],
   ];

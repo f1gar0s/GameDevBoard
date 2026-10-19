@@ -6,6 +6,7 @@ export default [
   'header.js',      // пример наследования: расширяет text.js
   'number.js',
   'image.js',
+  'video.js',
   'button.js',
   'dropdown.js',
   'list.js',

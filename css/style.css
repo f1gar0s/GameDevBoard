@@ -668,3 +668,24 @@ kbd { font-family: var(--mono); font-size: 11.5px; background: var(--panel2); bo
 .person i { width: 10px; height: 10px; border-radius: 50%; }
 .collab h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
 .room-badge { font-size: 12px; }
+
+/* видео YouTube */
+.videobox { width: 100%; height: 100%; display: flex; flex-direction: column; background: #0b0b0f; border: 1px solid var(--line2); border-radius: 12px; overflow: hidden; box-shadow: 0 8px 22px rgba(0, 0, 0, .4); }
+.video-bar { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 10px; background: var(--panel); border-bottom: 1px solid var(--line); cursor: move; flex: none; }
+.yt-badge { background: #f00; color: #fff; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 5px; }
+.video-title { flex: 1; min-width: 0; font-weight: 700; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.video-open { color: var(--muted); text-decoration: none; font-weight: 800; padding: 2px 6px; border-radius: 6px; }
+.video-open:hover { background: var(--panel2); color: var(--text); }
+.video-body { flex: 1; min-height: 0; position: relative; }
+.yt-cover, .yt-frame { position: relative; width: 100%; height: 100%; min-height: 120px; background: #000; }
+.cx-video .yt-cover, .cx-video .yt-frame { height: auto; aspect-ratio: 16 / 9; border-radius: 8px; overflow: hidden; }
+.yt-cover img { width: 100%; height: 100%; object-fit: cover; display: block; opacity: .92; }
+.yt-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: none; border: 0; padding: 0; transition: transform .12s; filter: drop-shadow(0 4px 12px rgba(0, 0, 0, .5)); }
+.yt-play:hover { transform: translate(-50%, -50%) scale(1.1); }
+.yt-time { position: absolute; right: 8px; bottom: 8px; background: rgba(0, 0, 0, .75); color: #fff; font: 600 11px var(--mono); padding: 2px 6px; border-radius: 5px; }
+.yt-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.yt-stop { position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; border-radius: 7px; border: 0; background: rgba(0, 0, 0, .65); color: #fff; font-size: 11px; opacity: 0; transition: opacity .15s; }
+.yt-frame:hover .yt-stop { opacity: 1; }
+.yt-empty { display: grid; place-items: center; height: 100%; }
+#viewport.panning iframe, #viewport.dragging iframe, #viewport.space iframe { pointer-events: none; }
+.img-wait { font-size: 12px; text-align: center; padding: 8px; }

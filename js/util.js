@@ -144,3 +144,46 @@ export function timeAgo(ts) {
   if (d < 86400) return `${Math.floor(d / 3600)} ч назад`;
   return new Date(ts).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
 }
+
+// ---------- YouTube ----------
+// Разбор ссылки YouTube: watch?v=, youtu.be/, shorts/, embed/, live/ + время старта (t=1m30s, t=90, start=90)
+export function parseYouTube(s) {
+  const t = String(s || '').trim();
+  const m = t.match(/^(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com\/(?:watch\?(?:[^\s#]*&)?v=|embed\/|shorts\/|live\/|v\/)|youtu\.be\/|youtube-nocookie\.com\/embed\/)([\w-]{11})(\S*)$/i);
+  if (!m) return null;
+  let start = 0;
+  const tm = (m[2] || '').match(/[?&#](?:t|start)=([0-9hms]+)/);
+  if (tm) {
+    const v = tm[1];
+    if (/^\d+$/.test(v)) start = +v;
+    else { const p = v.match(/(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?/); start = (+p[1] || 0) * 3600 + (+p[2] || 0) * 60 + (+p[3] || 0); }
+  }
+  return { id: m[1], start, url: t };
+}
+// Название ролика (без ключей API, через noembed); при ошибке — null
+export async function youTubeTitle(url) {
+  try {
+    const r = await fetch('https://noembed.com/embed?url=' + encodeURIComponent(url));
+    const j = await r.json();
+    return j.title || null;
+  } catch { return null; }
+}
+
+// ---------- картинки ----------
+// Большие фото уменьшаются и пережимаются (быстрее синхронизация и меньше места);
+// маленькие картинки и пиксель-арт остаются без потерь, GIF — как есть.
+export async function imageFileToDataURL(file, { max = 1600, quality = 0.85 } = {}) {
+  const src = await readFileAsDataURL(file);
+  if (/gif|svg/.test(file.type)) return src;
+  let img;
+  try { img = await loadImage(src); } catch { return src; }
+  const big = Math.max(img.width, img.height);
+  if (big <= max && file.size < 350 * 1024) return src;
+  const k = Math.min(1, max / big);
+  const cv = document.createElement('canvas');
+  cv.width = Math.max(1, Math.round(img.width * k)); cv.height = Math.max(1, Math.round(img.height * k));
+  cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+  let out = cv.toDataURL('image/webp', quality);
+  if (!out.startsWith('data:image/webp')) out = cv.toDataURL(file.type === 'image/png' ? 'image/png' : 'image/jpeg', quality);
+  return out.length < src.length ? out : src;
+}

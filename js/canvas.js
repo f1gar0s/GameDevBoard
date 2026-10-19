@@ -3,7 +3,7 @@ import { store } from './store.js';
 import { WIDGETS, STICKY_COLORS, ACCENT_COLORS } from './widgets.js';
 import { resolveList, dropImageOnCard } from './card.js';
 import { makeCard, liveEnv, toolById } from './tools.js';
-import { h, s, uid, clamp, isTyping, toast, readFileAsDataURL, loadImage, debounce } from './util.js';
+import { h, s, uid, clamp, isTyping, toast, readFileAsDataURL, loadImage, debounce, parseYouTube, youTubeTitle, imageFileToDataURL } from './util.js';
 import { playDialogue } from './play.js';
 
 export const view = { x: 0, y: 0, z: 1 };
@@ -531,8 +531,16 @@ export function addLink(from, to, extra = {}) {
   store.upsertLink(l);
   return l;
 }
+// Видео YouTube на доске (как в Miro): обложка → плеер прямо на доске
+export function addVideo(url, pt) {
+  const yt = parseYouTube(url);
+  if (!yt) return null;
+  const it = createItem('video', pt, { id: yt.id, start: yt.start, url: yt.url, title: '' });
+  youTubeTitle(yt.url).then((title) => { if (title && store.item(it.id)) store.patch(it.id, { data: { title } }); });
+  return it;
+}
 export async function addImageFile(file, pt) {
-  const src = await readFileAsDataURL(file);
+  const src = await imageFileToDataURL(file);
   const img = await loadImage(src);
   const asset = store.addAsset(src);
   const k = Math.min(1, 420 / Math.max(img.width, img.height));
@@ -938,10 +946,7 @@ export function initCanvas() {
     }
     const linkEl = e.target.closest('[data-link]');
     if (linkEl) { selectLink(linkEl.dataset.link); setTimeout(() => ctxbar._focus?.(), 20); return; }
-    if (tool === 'select' && e.target.closest('#viewport') && !e.target.closest('#selbox')) {
-      const it = createItem('sticky', screenToWorld(e.clientX, e.clientY));
-      if (it) startEditing(it.id);
-    }
+    // двойной клик по пустому месту ничего не создаёт (стикер — клавиша N или панель слева)
   });
   window.addEventListener('keydown', onKey);
   window.addEventListener('keyup', (e) => { if (e.code === 'Space') { spaceDown = false; vp.classList.remove('space'); } });
@@ -968,6 +973,7 @@ export function initCanvas() {
     if (files.length) { for (const f of files) await addImageFile(f, centerWorld()); return; }
     const text = dt?.getData('text/plain') || '';
     if (text.startsWith('gdboard:')) { try { pasteClip(JSON.parse(text.slice(8))); } catch { toast('Не удалось вставить', 'err'); } return; }
+    if (parseYouTube(text)) { addVideo(text.trim(), centerWorld()); return; }
     if (text.trim()) {
       const it = createItem('sticky', centerWorld(), { text: text.slice(0, 2000) });
       if (it && text.length > 200) store.patch(it.id, { w: 320, h: 320 });
@@ -983,6 +989,8 @@ export function initCanvas() {
     const pt = screenToWorld(e.clientX, e.clientY);
     const lib = e.dataTransfer.getData('application/x-gdb');
     if (lib) { const { type, data, template, tool } = JSON.parse(lib); vp.dispatchEvent(new CustomEvent('gdb-library-drop', { detail: { type, data, template, tool, pt } })); return; }
+    const dropped = e.dataTransfer.getData('text/uri-list') || e.dataTransfer.getData('text/plain');
+    if (!e.dataTransfer.files.length && parseYouTube(dropped)) { addVideo(dropped.trim(), pt); return; }
     const cardEl = document.elementFromPoint(e.clientX, e.clientY)?.closest('.item.t-card');
     for (const f of e.dataTransfer.files) {
       if (f.type.startsWith('image/')) {

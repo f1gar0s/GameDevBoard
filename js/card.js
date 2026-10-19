@@ -1,6 +1,6 @@
 // Карточка — контейнер компонентов (как GameObject в Unity).
 // Компоненты рисуются сверху вниз, их можно переставлять, настраивать (⚙) и удалять.
-import { h, s, uid, clamp, toast, download, modal, readFileAsDataURL, loadImage } from './util.js';
+import { h, s, uid, clamp, toast, download, modal, readFileAsDataURL, loadImage, imageFileToDataURL, parseYouTube, youTubeTitle } from './util.js';
 import { store } from './store.js';
 import { getComponent, allComponents, callWithBase } from './registry.js';
 import * as lib from './lib.js';
@@ -97,6 +97,7 @@ function makeCtx(cardIt, comp, api) {
   };
   const ctx = {
     h, s, uid, clamp, toast, download, modal, lib, store, readFileAsDataURL, loadImage,
+    parseYouTube, youTubeTitle,
     data: comp.data, comp, card: cardIt, cardId, compId,
     width: Math.max(160, cardIt.w - 26),
     begin: () => store.checkpoint(),
@@ -281,7 +282,9 @@ export const CARD = {
 export async function dropImageOnCard(cardId, file) {
   const it = store.item(cardId);
   if (!it) return;
-  const src = await readFileAsDataURL(file);
+  const comps0 = it.data.components || [];
+  const toSprite = comps0.some((c) => c.type === 'sprite' && !c.data.asset) && !comps0.some((c) => c.type === 'image' && !c.data.asset);
+  const src = toSprite ? await readFileAsDataURL(file) : await imageFileToDataURL(file); // спрайт-листы — без пережатия
   const img = await loadImage(src);
   const asset = store.addAsset(src);
   store.checkpoint();

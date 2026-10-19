@@ -9,6 +9,7 @@ export const ACCENT_COLORS = ['#7c5cff', '#22d3a6', '#f59e0b', '#ef4444', '#3b82
 
 export { RARITY, STATUS, TAGS, PRIORITY, TILES, compileFormula, parseSeries, sampleSeries, tileRows, drawTiles, resizeCells } from './lib.js';
 import { CARD, optionOf } from './card.js';
+import { renderYouTube } from './lib.js';
 import { getComponent } from './registry.js';
 
 // ---------- helpers ----------
@@ -128,7 +129,22 @@ export const WIDGETS = {
     title: (d) => d.name || 'Изображение',
     render(it) {
       const src = store.board.assets[it.data.asset];
-      return h('div', { class: 'imagebox' }, src ? h('img', { src, draggable: 'false', alt: it.data.name || '' }) : h('div', { class: 'muted' }, 'нет изображения'));
+      return h('div', { class: 'imagebox' }, src ? h('img', { src, draggable: 'false', alt: it.data.name || '' })
+        : h('div', { class: 'muted img-wait' }, it.data.asset ? '⏳ Изображение загружается…' : 'нет изображения'));
+    },
+  },
+  video: {
+    label: 'Видео YouTube', icon: '▶', w: 480, h: 304, min: [200, 140],
+    data: () => ({ id: '', start: 0, url: '', title: '' }),
+    title: (d) => d.title || 'Видео YouTube',
+    render(it, api) {
+      const d = it.data;
+      return h('div', { class: 'videobox' },
+        h('div', { class: 'video-bar' },
+          h('span', { class: 'yt-badge' }, '▶'),
+          h('span', { class: 'video-title' }, d.title || 'YouTube'),
+          d.url ? h('a', { class: 'video-open no-drag', href: `https://www.youtube.com/watch?v=${d.id}${d.start ? '&t=' + d.start + 's' : ''}`, target: '_blank', rel: 'noopener', title: 'Открыть на YouTube' }, '↗') : null),
+        h('div', { class: 'video-body' }, renderYouTube(d, it.id, () => api.rerender())));
     },
   },
 

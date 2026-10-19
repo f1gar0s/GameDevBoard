@@ -51,6 +51,38 @@ async function unseal(key, bytes) {
 }
 async function pipe(bytes, stream) { return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer()); }
 const deflate = (b) => pipe(b, new CompressionStream('deflate-raw'));
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// картинка передаётся байтами (а не base64-строкой) — на треть меньше трафика
+function assetToBytes(src) {
+  const m = /^data:([^;,]+);base64,/.exec(src);
+  if (!m) return te.encode('S' + src);
+  const bin = atob(src.slice(m[0].length));
+  const head = te.encode('B' + m[1] + '\n');
+  const out = new Uint8Array(head.length + bin.length);
+  out.set(head);
+  for (let i = 0; i < bin.length; i++) out[head.length + i] = bin.charCodeAt(i);
+  return out;
+}
+function bytesToAsset(b) {
+  if (b[0] === 66) { // 'B'
+    const nl = b.indexOf(10);
+    return 'data:' + td.decode(b.subarray(1, nl)) + ';base64,' + b64(b.subarray(nl + 1));
+  }
+  if (b[0] === 83) return td.decode(b.subarray(1)); // 'S'
+  return td.decode(b); // старый формат — просто строка
+}
+const b64 = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s); };
+// id всех картинок, на которые ссылаются элементы (поля asset на любой глубине)
+function referencedAssets(items) {
+  const out = new Set();
+  const walk = (v) => {
+    if (!v || typeof v !== 'object') return;
+    if (Array.isArray(v)) { v.forEach(walk); return; }
+    for (const [k, x] of Object.entries(v)) { if (k === 'asset' && typeof x === 'string') out.add(x); else walk(x); }
+  };
+  walk(items);
+  return out;
+}
 const inflate = (b) => pipe(b, new DecompressionStream('deflate-raw'));
 
 // ---------- комната и ссылка ----------
@@ -119,7 +151,9 @@ async function putBlob(path, bytes) {
     const dv = new DataView(msg.buffer);
     dv.setUint32(0, ver); dv.setUint32(4, i);
     msg.set(part, 8);
+    if (!client?.connected) return;
     client.publish(base + path + '/' + i, msg, { retain: true });
+    if (n > 2) await sleep(30); // не заваливаем публичный брокер пачкой сообщений
   }
   client.publish(base + path + '/meta', await seal(key, te.encode(JSON.stringify({ v: ver, n }))), { retain: true });
   const old = blobN.get(path) || 0;
@@ -147,7 +181,8 @@ async function publishSnapshot() {
 }
 const scheduleSnapshot = debounce(() => publishSnapshot(), 2500);
 async function publishAllAssets() {
-  for (const [id, src] of Object.entries(store.board.assets || {})) if (!blobN.has('asset/' + id)) await putBlob('asset/' + id, te.encode(src));
+  const used = referencedAssets(store.board.items);
+  for (const [id, src] of Object.entries(store.board.assets || {})) if (used.has(id) && !blobN.has('asset/' + id)) await putBlob('asset/' + id, assetToBytes(src));
 }
 
 // ---------- приём ----------
@@ -194,7 +229,8 @@ async function tryAssemble(path, bl) {
   bl.chunks.clear();
   if (path === 'snap') applySnapshot(JSON.parse(td.decode(bytes)));
   else if (path.startsWith('asset/')) {
-    const id = path.slice(6), src = td.decode(bytes);
+    const id = path.slice(6), src = bytesToAsset(bytes);
+    recentAssets.set(id, Date.now());
     if (store.board?.id === boardId && store.board.assets[id] !== src) { applying = true; store.setAsset(id, src, { remote: true }); applying = false; }
   }
 }
@@ -203,6 +239,7 @@ function applySnapshot(s) {
   if (dirty) { scheduleSnapshot(); return; } // у нас есть свои неотправленные правки — отправим их
   const b = store.board;
   const same = JSON.stringify(b.items) === JSON.stringify(s.items) && JSON.stringify(b.links) === JSON.stringify(s.links);
+  if (!collab.synced) setTimeout(() => { publishAllAssets(); requestMissing(); }, 3000);
   collab.synced = true;
   clearTimeout(syncTimer);
   if (!same || b.name !== s.name) {
@@ -222,7 +259,7 @@ function apply(m) {
   applying = true;
   try {
     switch (m.t) {
-      case 'up': store.upsert(m.item, o); break;
+      case 'up': store.upsert(m.item, o); checkMissingSoon(); break;
       case 'rm': store.remove(m.id, o); break;
       case 'lup': store.upsertLink(m.link, o); break;
       case 'lrm': store.removeLink(m.id, o); break;
@@ -231,6 +268,7 @@ function apply(m) {
       case 'hello': touchUser(m.user); send({ t: 'ping', user: me }); toast(`${m.user.name} подключился`, 'ok', 1800); break;
       case 'ping': touchUser(m.user); break;
       case 'bye': dropUser(m.uid); break;
+      case 'need': answerNeed(m.ids || []); break;
     }
   } finally { applying = false; }
 }
@@ -246,6 +284,27 @@ function dropUser(id) {
   collab.users.delete(id);
   removeRemoteCursor(id);
   emitPresence();
+}
+
+// ---------- недостающие картинки: попросить у тех, у кого они есть ----------
+const recentAssets = new Map(); // id → когда получили/отправили
+const checkMissingSoon = debounce(() => requestMissing(), 4000);
+function requestMissing() {
+  if (!collab.active || collab.status !== 'online' || store.board?.id !== boardId) return;
+  const need = [...referencedAssets(store.board.items)].filter((id) => !store.board.assets[id]);
+  if (need.length) send({ t: 'need', ids: need.slice(0, 50) });
+}
+function answerNeed(ids) {
+  const have = ids.filter((id) => store.board?.assets[id]);
+  if (!have.length) return;
+  // небольшая случайная задержка: если кто-то уже ответил, не дублируем
+  setTimeout(async () => {
+    for (const id of have) {
+      if (Date.now() - (recentAssets.get(id) || 0) < 8000) continue;
+      recentAssets.set(id, Date.now());
+      await putBlob('asset/' + id, assetToBytes(store.board.assets[id]));
+    }
+  }, 300 + Math.random() * 1500);
 }
 
 // ---------- подключение ----------
@@ -290,11 +349,15 @@ async function dial() {
     syncTimer = setTimeout(async () => {
       if (!collab.synced && store.board?.id === boardId) {
         collab.synced = true;
-        if (Object.keys(store.board.items).length || dirty) { await publishSnapshot(); await publishAllAssets(); }
+        if (Object.keys(store.board.items).length || dirty) await publishSnapshot();
         emitState();
       }
+      // картинки, вставленные без связи, — выложить; чужих не хватает — попросить
+      await publishAllAssets();
+      setTimeout(requestMissing, 2500);
     }, 3500);
     if (dirty) scheduleSnapshot();
+    if (collab.synced) setTimeout(() => { publishAllAssets(); requestMissing(); }, 4000); // после переподключения
   } catch (e) {
     collab.status = 'reconnecting';
     collab.error = e.message || 'ошибка сети';
@@ -353,7 +416,7 @@ store.on('remove', (id, o) => { if (local(o)) { send({ t: 'rm', id }); changed()
 store.on('link', (l, o) => { if (local(o)) { send({ t: 'lup', link: l }); changed(); } });
 store.on('unlink', (l, o) => { if (local(o)) { send({ t: 'lrm', id: l.id }); changed(); } });
 store.on('rename', (name, o) => { if (local(o)) { send({ t: 'rename', name }); changed(); } });
-store.on('asset', (id, src, o) => { if (local(o)) putBlob('asset/' + id, te.encode(src)); });
+store.on('asset', (id, src, o) => { if (local(o)) putBlob('asset/' + id, assetToBytes(src)); });
 
 export function trackCursor(vp) {
   const sendCur = throttle((x, y) => send({ t: 'cur', uid: me.id, name: me.name, color: me.color, x, y }), 70);
