@@ -1,10 +1,10 @@
 // Карточка — контейнер компонентов (как GameObject в Unity).
 // Компоненты рисуются сверху вниз, их можно переставлять, настраивать (⚙) и удалять.
 import { h, s, uid, clamp, toast, download, modal, readFileAsDataURL, loadImage, imageFileToDataURL, parseYouTube, youTubeTitle } from './util.js';
-import { store } from './store.js';
+import { store, pageOf, pathOf, framesInOrder } from './store.js';
 import { getComponent, allComponents, callWithBase } from './registry.js';
 import * as lib from './lib.js';
-import { focusItem } from './canvas.js';
+import { focusItem, goTo, openPage } from './canvas.js';
 import { liveEnv, TOOLS, makeCard } from './tools.js';
 import { findFreeSpot } from './canvas.js';
 
@@ -110,7 +110,11 @@ function makeCtx(cardIt, comp, api) {
     addAsset: (src) => store.addAsset(src),
     pickImage: (cb) => lib.pickImage(cb),
     focusItem,
+    // области (старые «фреймы» на холсте) со всех фреймов
     frames: () => Object.values(store.items).filter((i) => i.type === 'frame').sort((a, b) => a.y - b.y || a.x - b.x),
+    // фреймы иерархии (страницы) в порядке дерева, с путём «Раздел / Подраздел / Фрейм»
+    pages: () => framesInOrder(store.tree).map((n) => ({ ...n, path: pathOf(store.tree, n.id).join(' / ') })),
+    pageOf, pathOf: (id) => pathOf(store.tree, id), goTo, openPage,
     lists: listsOnBoard, resolveList, optionOf, dropdown: dropdownEl,
     compsOnBoard, resolveComp,
     // создать рядом карточку инструмента (например, «Предмет»)

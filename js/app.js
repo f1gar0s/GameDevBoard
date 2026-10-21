@@ -13,6 +13,8 @@ import { cardField, resolveList } from './card.js';
 import { exportGDD, exportEngine, exportBoardFile, readBoardFile, shareLink, readShared } from './export.js';
 import { lintDialogues } from './play.js';
 import { exportDialoguesDialog, exportTexts, lintFormat } from './dialogfmt.js';
+import { initHierarchy } from './hierarchy.js';
+import { pageOf, pathOf } from './store.js';
 import { collab, connectRoom, shareBoard, leave, me, setMyName, onPresence, onState, trackCursor, roomLink, parseRoom, BROKERS, brokerSettings, saveBrokerSettings, syncNow, redial } from './collab.js';
 
 const $ = (q) => document.querySelector(q);
@@ -45,7 +47,7 @@ async function renderHome() {
     thumb(b),
     h('div', { class: 'bcard-body' },
       h('div', { class: 'bcard-name' }, b.room ? h('span', { class: 'room-badge', title: 'Общая доска (совместный доступ)' }, '🌐 ') : null, b.name),
-      h('div', { class: 'bcard-meta' }, `${Object.keys(b.items || {}).length} элементов · ${timeAgo(b.updated)}`)),
+      h('div', { class: 'bcard-meta' }, `${Object.keys(b.items || {}).length} элементов${Object.values(b.tree || {}).filter((n) => n.kind === 'frame').length > 1 ? ' · ' + Object.values(b.tree).filter((n) => n.kind === 'frame').length + ' фреймов' : ''} · ${timeAgo(b.updated)}`)),
     h('div', { class: 'bcard-actions' },
       h('button', { title: 'Переименовать', onClick: async (e) => { e.stopPropagation(); const n = await prompt2('Название доски', b.name); if (n) { b.name = n; await DB.put(b); renderHome(); } } }, '✎'),
       h('button', { title: 'Дублировать', onClick: async (e) => { e.stopPropagation(); const c = structuredClone(b); delete c.room; c.id = newBoard().id; c.name += ' (копия)'; c.updated = Date.now(); await DB.put(c); renderHome(); } }, '⧉'),
@@ -117,7 +119,7 @@ async function importBoardFromFile(f) {
 // ======================= РЕДАКТОР =======================
 const DRAW_TOOLS = [
   ['select', '➤', 'Выделение', 'V'], ['hand', '✋', 'Рука', 'H / пробел'], null,
-  ['sticky', '🗒', 'Стикер', 'N'], ['text', 'T', 'Текст', 'T'], ['shape', '◆', 'Фигура', 'R'], ['frame', '▢', 'Фрейм', 'F'],
+  ['sticky', '🗒', 'Стикер', 'N'], ['text', 'T', 'Текст', 'T'], ['shape', '◆', 'Фигура', 'R'], ['frame', '▢', 'Область (рамка на холсте)', 'F'],
   ['connector', '⟶', 'Связь', 'C'], ['pen', '✎', 'Карандаш', 'P'], ['eraser', '⌫', 'Ластик', 'E'],
 ];
 function buildToolbar() {
@@ -159,7 +161,7 @@ function insertTemplate(t, at) {
 }
 function buildLibrary() {
   const lib = $('#library');
-  const BASIC = [['sticky', 'Стикер', '🗒'], ['text', 'Текст', 'T'], ['shape', 'Фигура', '◆'], ['frame', 'Фрейм', '▢'], ['video', 'Видео', '▶']];
+  const BASIC = [['sticky', 'Стикер', '🗒'], ['text', 'Текст', 'T'], ['shape', 'Фигура', '◆'], ['frame', 'Область', '▢'], ['video', 'Видео', '▶']];
   const toolTile = (t) => h('button', {
     class: 'lib-tile', draggable: 'true', title: (t.desc ? t.desc + '. ' : '') + 'Клик — добавить, или перетащите на доску',
     onClick: () => {
@@ -230,7 +232,11 @@ function bar(parts, total) {
   return h('div', { class: 'sbar' }, parts.filter((p) => p.v > 0).map((p) => h('i', { style: { width: (p.v / total) * 100 + '%', background: p.c }, title: `${p.n}: ${p.v}` })));
 }
 function itemRow(it, extra) {
-  return h('button', { class: 'ov-row', onClick: () => focusItem(it.id) }, h('span', { class: 'ov-i' }, it.type === 'card' ? (toolById(it.data.tool)?.icon || '▭') : WIDGETS[it.type]?.icon || '•'), h('span', { class: 'ov-t' }, titleOf(it)), extra ? h('span', { class: 'ov-x' }, extra) : null);
+  const pg = pageOf(it) !== store.page ? pathOf(store.tree, pageOf(it)).join(' / ') : '';
+  return h('button', { class: 'ov-row', onClick: () => focusItem(it.id), title: pg ? 'На фрейме «' + pg + '»' : null },
+    h('span', { class: 'ov-i' }, it.type === 'card' ? (toolById(it.data.tool)?.icon || '▭') : WIDGETS[it.type]?.icon || '•'),
+    h('span', { class: 'ov-t' }, titleOf(it), pg ? h('small', { class: 'ov-page' }, '📄 ' + pg) : null),
+    extra ? h('span', { class: 'ov-x' }, extra) : null);
 }
 function renderOverview() {
   const ov = $('#overview');
@@ -283,10 +289,10 @@ function renderOverview() {
       if (list.length) groups.push([t.id === 'empty' ? 'Свои карточки' : t.name, list]);
     }
     const frames = items.filter((i) => i.type === 'frame');
-    if (frames.length) groups.push(['Фреймы', frames]);
+    if (frames.length) groups.push(['Области', frames]);
     body = groups.length
       ? h('div', {}, groups.map(([n, list]) => h('div', { class: 'ov-group' }, h('h4', {}, `${n} `, h('span', { class: 'muted' }, list.length)), list.map((i) => itemRow(i)))))
-      : h('div', { class: 'ov-empty' }, 'Здесь появятся карточки, реплики и фреймы с доски.');
+      : h('div', { class: 'ov-empty' }, 'Здесь появятся карточки, реплики и области со всех фреймов доски.');
   } else if (ovTab === 'search') {
     const inp = h('input', { class: 'input', placeholder: 'Найти на доске…', value: ov._q || '' });
     const res = h('div', { class: 'ov-results' });
@@ -313,7 +319,7 @@ function renderOverview() {
           if (!d.list) issues.push({ id: c.id, msg: `Выпадающий список «${d.label}» не привязан к списку` });
           else if (!resolveList(d.list)) issues.push({ id: c.id, msg: `Выпадающий список «${d.label}»: карточка-список удалена` });
         }
-        if (cp.type === 'button' && (!d.target || !store.item(d.target))) issues.push({ id: c.id, msg: `Кнопка «${d.label}» никуда не ведёт` });
+        if (cp.type === 'button' && (!d.target || (!store.item(d.target) && !store.tree[d.target]))) issues.push({ id: c.id, msg: `Кнопка «${d.label}» никуда не ведёт` });
         if (cp.type === 'list' && !(d.items || []).length) issues.push({ id: c.id, msg: 'Пустой список вариантов' });
         if (cp.type === 'loottable' && !(d.rows || []).some((r) => +r.w > 0)) issues.push({ id: c.id, msg: 'Таблица лута: сумма весов равна нулю' });
         if (cp.type === 'quest' && !(d.objectives || []).length) issues.push({ id: c.id, msg: 'У квеста нет целей' });
@@ -443,15 +449,16 @@ function setupTopbar() {
   $('#z-help').onclick = showHelp;
   onViewChange((v) => ($('#z-val').textContent = Math.round(v.z * 100) + '%'));
   const empty = $('#empty-hint');
-  const upd = () => empty.classList.toggle('hidden', !store.board || Object.keys(store.items).length > 0);
+  const upd = () => empty.classList.toggle('hidden', !store.board || store.pageItems().length > 0);
   store.on('change', () => { upd(); refreshOverview(); });
   store.on('load', upd);
+  store.on('page', () => { upd(); refreshOverview(); });
 }
 
 function showHelp() {
   const rows = [
     ['V / H', 'Выделение / рука'], ['Пробел + тянуть, ПКМ, колесо', 'Перемещение по доске'], ['Колесо / Ctrl + колесо', 'Масштаб'],
-    ['N, T, R, F', 'Стикер, текст, фигура, фрейм'], ['C', 'Связь: тянуть от элемента к элементу'], ['P / E', 'Карандаш / ластик'],
+    ['N, T, R, F', 'Стикер, текст, фигура, область'], ['B', 'Иерархия: разделы и фреймы'], ['Alt + ↑ / ↓', 'Предыдущий / следующий фрейм'], ['C', 'Связь: тянуть от элемента к элементу'], ['P / E', 'Карандаш / ластик'],
     ['Двойной клик', 'Редактировать текст'], ['⟶ у выделенного', 'Протянуть связь (в пустоту — создаст новый элемент)'],
     ['Ctrl+C / V / D', 'Копировать / вставить / дублировать'], ['Ctrl+Z / Ctrl+Shift+Z', 'Отменить / повторить'],
     ['Del', 'Удалить'], ['Стрелки (+Shift)', 'Сдвиг на 1 (10) px'], ['Shift+1 / Ctrl+0', 'Показать всё / 100%'], ['Shift при ресайзе', 'Сохранить пропорции'],
@@ -463,8 +470,11 @@ function showHelp() {
       h('li', {}, 'Диалоги: связывайте реплики, подпись связи — вариант ответа. ▶ Играть — пройти как игрок.'),
       h('li', {}, 'Карточка = набор компонентов. «+ Компонент» внизу карточки, ⠿ — перетащить компонент, ⚙ — настроить, ↑↓ — порядок.'),
       h('li', {}, 'Выпадающий список берёт варианты из карточки «Список» (текст + цвет). Поменяли вариант в списке — обновились все карточки.'),
-      h('li', {}, 'Фрейм можно сделать колонкой канбана (панель над фреймом): карточка, брошенная в него, получит вариант с названием фрейма, например «В работе».'),
-      h('li', {}, 'Кнопка-ссылка: ⚙ рядом с кнопкой → выберите фрейм; клик по кнопке переносит к нему.'),
+      h('li', {}, 'Иерархия слева (B): разделы и подразделы любой глубины, в них — фреймы. Фрейм — отдельная страница доски, на холсте только его элементы, поэтому большие проекты не тормозят.'),
+      h('li', {}, 'Ссылка в тексте: напишите в стикере или тексте [[Имя фрейма]] — получится ссылка, клик открывает фрейм. Готовую ссылку даёт меню фрейма в иерархии.'),
+      h('li', {}, 'Выделенное можно перенести на другой фрейм (📄 → на панели над выделением). Область — «📄 В отдельный фрейм».'),
+      h('li', {}, 'Область можно сделать колонкой канбана (панель над областью): карточка, брошенная в неё, получит вариант с названием области, например «В работе».'),
+      h('li', {}, 'Кнопка-ссылка: ⚙ рядом с кнопкой → выберите фрейм или объект; если объект на другом фрейме, кнопка откроет этот фрейм.'),
       h('li', {}, 'Уровень: левая кнопка рисует выбранным тайлом, правая стирает. Холст: слои перетаскиваются за ⠿.'),
       h('li', {}, 'Кривая баланса: каждая строка «Имя: формула» от lvl, например «Урон: 10 + lvl^1.3».'),
       h('li', {}, 'Экспорт → «Данные для движка» отдаёт JSON с персонажами, предметами, диалогами, уровнями и таблицами.'))), { wide: true });
@@ -540,6 +550,7 @@ async function route() {
 const failed = await loadComponents();
 if (failed.length) setTimeout(() => toast('Не загрузились компоненты: ' + failed.join(', '), 'err', 6000), 800);
 initCanvas();
+initHierarchy();
 buildToolbar();
 buildLibrary();
 setupLibraryDrop();

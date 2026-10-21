@@ -23,6 +23,7 @@
       <a class="logo-btn" href="#/" title="Все доски"><span class="logo-mark"></span></a>
       <input id="board-name" class="board-name" spellcheck="false" maxlength="80">
       <span id="save-state" class="save-state"></span>
+      <div id="crumbs" class="crumbs"></div>
       <div class="grow"></div>
       <div id="presence" class="presence"></div>
       <button id="btn-collab" class="btn" title="Совместная работа в реальном времени">👥 <span class="hide-sm">Совместно</span></button>
@@ -30,7 +31,7 @@
       <div class="menu-wrap">
         <button id="btn-export" class="btn" title="Экспорт">⤓ <span class="hide-sm">Экспорт</span></button>
         <div id="export-menu" class="menu hidden">
-          <button data-act="gdd">📘 GDD в Markdown <small>документ из фреймов и карточек</small></button>
+          <button data-act="gdd">📘 GDD в Markdown <small>документ по иерархии: разделы, фреймы, карточки</small></button>
           <button data-act="dialogs">💬 Диалоги для игры (JSON) <small>один файл — один диалог, условия и действия</small></button>
           <button data-act="texts">🌐 Собрать все тексты (CSV) <small>русский текст — ключ, колонка для перевода</small></button>
           <button data-act="engine">🎮 Данные для движка (JSON) <small>Unity / Godot / Unreal</small></button>
@@ -52,12 +53,14 @@
       <div id="marquee"></div>
       <div id="ctxbar" style="display:none"></div>
       <div id="empty-hint" class="empty-hint hidden">
-        <div class="eh-title">Пустая доска</div>
-        <div><b>N</b> стикер · <b>R</b> фигура · <b>F</b> фрейм · <b>C</b> связь</div>
+        <div class="eh-title">Пустой фрейм</div>
+        <div><b>N</b> стикер · <b>R</b> фигура · <b>F</b> область · <b>C</b> связь</div>
+        <div>Слева — <b>иерархия</b>: разделы и фреймы проекта (клавиша <b>B</b>)</div>
         <div>Откройте <b>＋ Инстр.</b> слева: карточки с компонентами, реплики, баги, задачи, карты, холст</div>
       </div>
     </div>
 
+    <aside id="hierarchy" class="hierarchy closed"></aside>
     <nav id="toolbar" class="toolbar"></nav>
     <div id="penbar" class="penbar hidden"></div>
     <aside id="library" class="drawer left hidden"></aside>

@@ -1,6 +1,6 @@
 // Бесконечный холст: отрисовка, выделение, перетаскивание, связи, инструменты
-import { store } from './store.js';
-import { WIDGETS, STICKY_COLORS, ACCENT_COLORS } from './widgets.js';
+import { store, pageOf, pathOf, framesInOrder } from './store.js';
+import { WIDGETS, STICKY_COLORS, ACCENT_COLORS, setLinkHandler } from './widgets.js';
 import { resolveList, dropImageOnCard } from './card.js';
 import { makeCard, liveEnv, toolById } from './tools.js';
 import { h, s, uid, clamp, isTyping, toast, readFileAsDataURL, loadImage, debounce, parseYouTube, youTubeTitle, imageFileToDataURL } from './util.js';
@@ -36,7 +36,10 @@ export function centerWorld() {
   const r = vp.getBoundingClientRect();
   return screenToWorld(r.left + r.width / 2, r.top + r.height / 2);
 }
-const saveView = debounce(() => { if (store.board) { store.board.view = { ...view }; store.save(); } }, 500);
+// вид (сдвиг и масштаб) запоминается для каждого фрейма отдельно
+const saveView = debounce(() => { if (store.board) { store.board.view = { ...view }; (store.board.views ??= {})[store.page] = { ...view }; store.save(); } }, 500);
+const onPage = (it) => pageOf(it) === store.page;
+const pageItems = () => store.pageItems();
 const viewListeners = [];
 export const onViewChange = (fn) => viewListeners.push(fn);
 export function applyView() {
@@ -88,7 +91,7 @@ export function bboxOf(items) {
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 export function fitAll(animate = true) {
-  const b = bboxOf(Object.values(store.items));
+  const b = bboxOf(pageItems());
   if (!b) { const t = { x: vp.clientWidth / 2, y: vp.clientHeight / 2, z: 1 }; animate ? animateView(t) : (Object.assign(view, t), applyView()); return; }
   const t = viewForRect(b, 1);
   animate ? animateView(t) : (Object.assign(view, t), applyView());
@@ -96,10 +99,65 @@ export function fitAll(animate = true) {
 export function focusItem(id) {
   const it = store.item(id);
   if (!it) return;
+  // элемент в другом фрейме — сначала открываем этот фрейм
+  if (!onPage(it)) { openPage(pageOf(it), { fit: false }); requestAnimationFrame(() => focusItem(id)); return; }
   animateView(viewForRect(it, 1.2, Math.max(120, vp.clientWidth * 0.18)));
   selectOnly(id);
   const n = nodes.get(id)?.el;
   if (n) { n.classList.remove('flash'); void n.offsetWidth; n.classList.add('flash'); }
+}
+
+// Открыть фрейм (страницу иерархии)
+export function openPage(id, { fit = true } = {}) {
+  if (!store.setPage(id)) return false;
+  if (fit && !store.board.views?.[id]) requestAnimationFrame(() => fitAll(false));
+  return true;
+}
+// Перейти по ссылке: фрейм иерархии, элемент на любом фрейме или имя (для [[ссылок]] в тексте)
+export function goTo(target) {
+  if (!target || !store.board) return false;
+  if (store.tree[target]?.kind === 'frame') return openPage(target);
+  if (store.item(target)) { focusItem(target); return true; }
+  const q = String(target).trim().toLowerCase();
+  if (!q) return false;
+  const frames = Object.values(store.tree).filter((n) => n.kind === 'frame');
+  const byPath = frames.find((n) => pathOf(store.tree, n.id).join('/').toLowerCase() === q);
+  const byName = frames.find((n) => n.name.trim().toLowerCase() === q);
+  if (byPath || byName) return openPage((byPath || byName).id);
+  const it = Object.values(store.items).find((i) => (i.type === 'frame' || i.type === 'card') && (i.data.title || '').trim().toLowerCase() === q);
+  if (it) { focusItem(it.id); return true; }
+  toast('Не найдено: «' + target + '»', 'err');
+  return false;
+}
+// Область на холсте → отдельный фрейм в иерархии (рядом с открытым)
+export function areaToPage(id) {
+  const a = store.item(id);
+  if (!a) return;
+  const cur = store.tree[store.page];
+  const sibs = Object.values(store.tree).filter((n) => (n.parent || null) === (cur?.parent || null));
+  const node = { id: uid('p'), kind: 'frame', name: (a.data.title || 'Новый фрейм').trim() || 'Новый фрейм', parent: cur?.parent || null, order: Math.max(0, ...sibs.map((n) => n.order ?? 0)) + 1 };
+  store.checkpoint();
+  store.setNode(node);
+  moveToPage([id], node.id, false);
+  openPage(node.id);
+}
+// Перенести элементы в другой фрейм
+export function moveToPage(ids, page, checkpoint = true) {
+  if (!store.tree[page] || !ids.length) return;
+  if (checkpoint) store.checkpoint();
+  const set = new Set(ids);
+  // вместе с областью переносим всё, что в ней лежит
+  for (const id of ids) {
+    const f = store.item(id);
+    if (f?.type !== 'frame') continue;
+    for (const it of pageItems()) { const c = center(it); if (it.type !== 'frame' && c.x > f.x && c.x < f.x + f.w && c.y > f.y && c.y < f.y + f.h) set.add(it.id); }
+  }
+  for (const id of set) store.patch(id, { page });
+  // связи между перенесёнными и оставшимися элементами больше не видны — предупредим
+  const cut = Object.values(store.links).filter((l) => set.has(l.from) !== set.has(l.to)).length;
+  if (cut) setTimeout(() => toast(`Связей между фреймами: ${cut} — они сохранены, но на холсте не рисуются`, 'info', 3500), 400);
+  sel.clear(); refreshSelection();
+  toast(`Перенесено: ${set.size} → «${store.tree[page].name}»`, 'ok', 2200);
 }
 
 // ---------- API для виджетов ----------
@@ -123,7 +181,7 @@ function renderKey(it) {
   const watch = WIDGETS[it.type]?.watch?.(it);
   if (watch?.length) k += '|' + watchSig(watch);
   const deps = WIDGETS[it.type]?.deps?.(it);
-  if (deps?.length) k += '|' + deps.map((d) => { const x = store.item(d); return x ? JSON.stringify(x.data) + (x.data.title || '') : '∅'; }).join('|');
+  if (deps?.length) k += '|' + deps.map((d) => { const x = store.item(d); const n = store.tree?.[d]; return x ? JSON.stringify(x.data) + (x.data.title || '') + pageOf(x) : n ? 'T' + pathOf(store.tree, d).join('/') : '∅'; }).join('|');
   return k;
 }
 function place(el, it) {
@@ -171,6 +229,7 @@ function remountDependents(id) {
 }
 const isTextEntry = (el) => !!el && (el.isContentEditable || el.tagName === 'TEXTAREA' || (el.tagName === 'INPUT' && !/^(checkbox|radio|color|button|range|file)$/.test(el.type)));
 function mountItem(it, force = false) {
+  if (!onPage(it)) { if (nodes.has(it.id)) { sizeObs?.unobserve(nodes.get(it.id).el); unmountItem(it.id); sel.delete(it.id); } return; }
   let rec = nodes.get(it.id);
   if (!rec) {
     rec = { el: h('div', { 'data-id': it.id }), key: null };
@@ -222,7 +281,7 @@ function markerFor(color) {
 function renderLink(l) {
   const a = store.item(l.from), b = store.item(l.to);
   let g = linkEls.get(l.id);
-  if (!a || !b) { g?.remove(); linkEls.delete(l.id); return; }
+  if (!a || !b || !onPage(a) || !onPage(b)) { g?.remove(); linkEls.delete(l.id); return; }
   if (!g) {
     g = s('g', { 'data-link': l.id, class: 'link' },
       s('path', { class: 'hit' }), s('path', { class: 'line' }),
@@ -367,6 +426,10 @@ function buildCtxbar() {
       title: 'Колонка канбана: карточка, брошенная во фрейм, получит значение, совпадающее с названием фрейма, в своём выпадающем списке (например «В работе»)',
       onClick: () => patchSelected(() => ({ data: { kanban: !first.data.kanban } })),
     }, '▥ Колонка канбана'));
+    if (items.length === 1) parts.push(h('button', {
+      class: 'cx-btn', title: 'Сделать область отдельным фреймом в иерархии: она и всё, что в ней лежит, переедут на новую страницу',
+      onClick: () => areaToPage(first.id),
+    }, '📄 В отдельный фрейм'));
   }
   if (one === 'card') parts.push(swatches(ACCENT_COLORS, first.data.color, (c) => patchSelected(() => ({ data: { color: c } }))));
   if (one === 'text') {
@@ -385,6 +448,16 @@ function buildCtxbar() {
       h('button', { class: 'cx-btn', title: 'Сетка', onClick: () => align('grid') }, '▦')));
   }
   if (parts.length) parts.push(h('span', { class: 'cx-sep' }));
+  // перенос выделенного на другой фрейм иерархии
+  const pages = framesInOrder(store.tree).filter((n) => n.id !== store.page);
+  if (pages.length) {
+    const mv = h('select', { class: 'cx-select', title: 'Перенести выделенное в другой фрейм' },
+      h('option', { value: '' }, '📄 →'),
+      pages.map((n) => h('option', { value: n.id }, pathOf(store.tree, n.id).join(' / '))));
+    mv.onchange = () => { if (mv.value) moveToPage([...sel], mv.value); };
+    mv.onkeydown = (e) => e.stopPropagation();
+    parts.push(mv);
+  }
   parts.push(
     h('button', { class: 'cx-btn', title: 'Дублировать (Ctrl+D)', onClick: duplicate }, '⧉'),
     one !== 'frame' ? h('button', { class: 'cx-btn', title: 'На передний план', onClick: () => patchSelected(() => ({ z: store.maxZ() + 1 })) }, '⬆') : null,
@@ -462,7 +535,7 @@ export function createTool(toolId, pt) {
   return card;
 }
 export function findFreeSpot(pt, w, hh) {
-  const others = Object.values(store.items).filter((i) => i.type !== 'frame');
+  const others = pageItems().filter((i) => i.type !== 'frame');
   const hit = (x, y) => others.some((o) => x - w / 2 < o.x + o.w + 16 && x + w / 2 > o.x - 16 && y - hh / 2 < o.y + o.h + 16 && y + hh / 2 > o.y - 16);
   for (let row = 0; row < 6; row++) for (let col = 0; col < 10; col++) {
     const x = pt.x + col * (w + 30), y = pt.y + row * (hh + 30);
@@ -508,6 +581,7 @@ export function pasteClip(clip, at = null, { offset = 30, checkpoint = true } = 
     idMap.set(src.id, it.id);
     it.x += dx; it.y += dy;
     it.z = it.type === 'frame' ? --fz : ++z;
+    if (store.page === 'p_main') delete it.page; else it.page = store.page; // вставляем в открытый фрейм
     if (it.data.asset && assetMap.has(it.data.asset)) it.data.asset = assetMap.get(it.data.asset);
     store.upsert(it);
     created.push(it.id);
@@ -567,7 +641,7 @@ function startDrag(e, id) {
   for (const id2 of [...moving]) {
     const f = store.item(id2);
     if (f?.type !== 'frame') continue;
-    for (const it of Object.values(store.items)) {
+    for (const it of pageItems()) {
       if (moving.has(it.id) || it.type === 'frame' || it.locked) continue;
       const c = center(it);
       if (c.x > f.x && c.x < f.x + f.w && c.y > f.y && c.y < f.y + f.h) moving.add(it.id);
@@ -726,7 +800,7 @@ function onMove(e) {
       const a = screenToWorld(Math.min(g.sx, e.clientX), Math.min(g.sy, e.clientY));
       const bw = w / view.z, bh = hh / view.z;
       const hit = new Set(g.base);
-      for (const it of Object.values(store.items)) {
+      for (const it of pageItems()) {
         const inside = it.x >= a.x && it.y >= a.y && it.x + it.w <= a.x + bw && it.y + it.h <= a.y + bh;
         const inter = it.x < a.x + bw && it.x + it.w > a.x && it.y < a.y + bh && it.y + it.h > a.y;
         if (it.type === 'frame' ? inside : inter) hit.add(it.id);
@@ -750,7 +824,7 @@ function onMove(e) {
 
 function frameAt(pt, exclude) {
   let best = null;
-  for (const f of Object.values(store.items)) {
+  for (const f of pageItems()) {
     if (f.type !== 'frame' || exclude?.has(f.id)) continue;
     if (pt.x > f.x && pt.x < f.x + f.w && pt.y > f.y && pt.y < f.y + f.h) if (!best || (f.z || 0) > (best.z || 0)) best = f;
   }
@@ -884,7 +958,7 @@ function onKey(e) {
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteSelection(); return; }
   if (e.key === 'Escape') { selectOnly(null); setTool('select'); return; }
   if (e.key === 'Enter' && sel.size === 1) { e.preventDefault(); startEditing([...sel][0]); return; }
-  if (e.key.startsWith('Arrow') && sel.size) {
+  if (e.key.startsWith('Arrow') && sel.size && !e.altKey) {
     e.preventDefault();
     const d = e.shiftKey ? 10 : 1;
     const [ddx, ddy] = { ArrowLeft: [-d, 0], ArrowRight: [d, 0], ArrowUp: [0, -d], ArrowDown: [0, d] }[e.key];
@@ -920,6 +994,7 @@ export function initCanvas() {
     h('div', { class: 'handle resize', 'data-handle': 'resize', title: 'Изменить размер' }),
     h('div', { class: 'handle link', 'data-handle': 'link', title: 'Протяните к другому элементу, чтобы связать' }, '⟶'));
   vp.dataset.tool = 'select';
+  setLinkHandler(goTo);
 
   vp.addEventListener('pointerdown', onDown);
   window.addEventListener('pointermove', onMove);
@@ -1003,16 +1078,25 @@ export function initCanvas() {
   });
 
   // события хранилища
-  store.on('load', (b) => {
-    nodes.forEach((r) => r.el.remove()); nodes.clear();
+  const mountPage = (keepView) => {
+    const b = store.board;
+    nodes.forEach((r) => { sizeObs?.unobserve(r.el); r.el.remove(); }); nodes.clear();
     linkEls.forEach((g) => g.remove()); linkEls.clear();
     sel.clear(); selLink = null;
-    Object.values(b.items).forEach((it) => mountItem(it));
+    pageItems().forEach((it) => mountItem(it));
     Object.values(b.links).forEach(renderLink);
-    Object.assign(view, b.view || { x: 0, y: 0, z: 1 });
+    clearRemoteCursors();
+    if (!keepView) Object.assign(view, b.views?.[store.page] || (store.page === 'p_main' && b.view) || { x: vp.clientWidth / 2, y: vp.clientHeight / 2, z: 1 });
     applyView();
     updateSelUI(true);
-  });
+  };
+  let loadedId = null;
+  store.on('load', (b) => { mountPage(loadedId === b.id); loadedId = b.id; });
+  store.on('page', () => mountPage(false));
+  // переименовали/переместили фрейм — обновить кнопки, которые на него ссылаются
+  const treeChanged = (id) => { for (const it of pageItems()) if (it.type === 'card') mountItem(it); };
+  store.on('tree', (n) => treeChanged(n.id));
+  store.on('treerm', (id) => treeChanged(id));
   store.on('item', (it, opts) => {
     if (opts.norender) {
       const rec = nodes.get(it.id);
@@ -1026,6 +1110,7 @@ export function initCanvas() {
     }
     updateLinksFor(it.id);
     if (sel.has(it.id)) { updateSelUI(!opts.norender && !opts.remote); }
+    else if (!onPage(it)) updateSelUI(true);
   });
   store.on('remove', (id) => {
     sizeObs?.unobserve(nodes.get(id)?.el || document.body);
@@ -1049,6 +1134,7 @@ export function initCanvas() {
 // ---------- курсоры участников ----------
 const cursors = new Map();
 export function setRemoteCursor(pid, c) {
+  if (c.page && c.page !== store.page) { removeRemoteCursor(pid); return; } // участник на другом фрейме
   let el = cursors.get(pid);
   if (!el) {
     el = h('div', { class: 'rcursor' },

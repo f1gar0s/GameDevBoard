@@ -33,10 +33,35 @@ function select(api, key, options, { cls = '', onChange } = {}) {
   return el;
 }
 
-export function editable(api, key, { cls = '', placeholder = '' } = {}) {
+// [[Имя фрейма]] в тексте — ссылка: клик открывает фрейм (или объект с таким названием)
+const LINK_RE = /\[\[([^\[\]\n]{1,120})\]\]/g;
+let goToFn = null;
+export const setLinkHandler = (fn) => { goToFn = fn; };
+function fillText(el, text, links) {
+  if (!links || !text.includes('[[')) { el.textContent = text; return; }
+  const parts = [];
+  let last = 0;
+  for (const m of text.matchAll(LINK_RE)) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const target = m[1].trim();
+    parts.push(h('a', { class: 'plink', href: '#', 'data-target': target, title: 'Перейти: ' + target }, target));
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  el.replaceChildren(...parts);
+}
+export function editable(api, key, { cls = '', placeholder = '', links = true } = {}) {
   const el = h('div', { class: 'editable ' + cls, 'data-placeholder': placeholder });
-  el.textContent = api.item.data[key] || '';
+  fillText(el, api.item.data[key] || '', links);
+  el.addEventListener('click', (e) => {
+    const a = e.target.closest('.plink');
+    if (!a || el.isContentEditable) return;
+    e.preventDefault();
+    e.stopPropagation();
+    goToFn?.(a.dataset.target);
+  });
   el._edit = () => {
+    el.textContent = api.item.data[key] || '';
     try { el.contentEditable = 'plaintext-only'; } catch { el.contentEditable = 'true'; }
     if (!el.isContentEditable) el.contentEditable = 'true';
     api.begin();
@@ -50,7 +75,9 @@ export function editable(api, key, { cls = '', placeholder = '' } = {}) {
   el.addEventListener('input', () => api.live({ [key]: el.innerText }));
   el.addEventListener('blur', () => {
     el.contentEditable = 'false';
-    api.set({ [key]: el.innerText.replace(/\n$/, '') });
+    const v = el.innerText.replace(/\n$/, '');
+    api.set({ [key]: v });
+    fillText(el, v, links);
   });
   el.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); el.blur(); }
@@ -104,12 +131,12 @@ export const WIDGETS = {
     },
   },
   frame: {
-    label: 'Фрейм', icon: '▢', w: 640, h: 440, min: [120, 80],
-    data: () => ({ title: 'Раздел', color: '#7c5cff', status: '' }),
+    label: 'Область', icon: '▢', w: 640, h: 440, min: [120, 80],
+    data: () => ({ title: 'Область', color: '#7c5cff', status: '' }),
     title: (d) => d.title,
     render(it, api) {
       return h('div', { class: 'frame', style: { '--c': it.data.color } },
-        h('div', { class: 'frame-title' }, editable(api, 'title', { placeholder: 'Фрейм' }),
+        h('div', { class: 'frame-title' }, editable(api, 'title', { placeholder: 'Область', links: false }),
           it.data.kanban ? h('span', { class: 'frame-status', title: 'Колонка канбана: карточка, брошенная сюда, получит значение «' + (it.data.title || '') + '» в подходящем выпадающем списке' }, '⇢ колонка') : null));
     },
   },

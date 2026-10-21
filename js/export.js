@@ -1,5 +1,5 @@
 // Экспорт/импорт: файл доски, GDD в Markdown, JSON для движка, ссылка-снимок
-import { store, newBoard } from './store.js';
+import { store, newBoard, ensureTree, childrenOf, pageOf } from './store.js';
 import { uid, download, compress, decompress, h, modal, toast } from './util.js';
 import { RARITY, STATUS, TILES, PRIORITY, parseSeries, sampleSeries, tileRows } from './widgets.js';
 import * as lib from './lib.js';
@@ -22,7 +22,7 @@ export function normalizeImported(obj) {
   const b = obj?.format === 'gdboard' ? obj.board : obj?.board || obj;
   if (!b || typeof b !== 'object' || !b.items) throw new Error('Это не файл GameDev Board');
   const nb = newBoard(b.name || 'Импорт');
-  nb.items = b.items; nb.links = b.links || {}; nb.assets = b.assets || {}; nb.view = b.view || nb.view;
+  nb.items = b.items; nb.links = b.links || {}; nb.assets = b.assets || {}; nb.view = b.view || nb.view; nb.tree = b.tree || {}; nb.views = b.views || {};
   return nb;
 }
 
@@ -82,24 +82,43 @@ function md(it) {
   }
 }
 
+// GDD: разделы и фреймы иерархии → заголовки, внутри фрейма — его области и элементы
 export function exportGDD(board = store.board) {
-  const items = Object.values(board.items);
+  const tree = ensureTree(board);
+  let out = `# ${board.name}\n\n_Сгенерировано в GameDev Board · ${new Date().toLocaleDateString('ru-RU')}_\n\n`;
+  const all = Object.values(board.items);
+  const single = Object.values(tree).filter((n) => n.kind === 'frame').length === 1;
+  const walk = (parent, depth) => {
+    for (const n of childrenOf(tree, parent)) {
+      const hd = '#'.repeat(Math.min(6, depth + 2));
+      if (n.kind === 'section') { out += `${hd} 📁 ${n.name}\n\n`; walk(n.id, depth + 1); continue; }
+      const items = all.filter((i) => pageOf(i) === n.id);
+      if (!items.length) continue;
+      if (!single) out += `${hd} ${n.name}\n\n`;
+      out += pageMd(items, single ? 2 : Math.min(6, depth + 3));
+    }
+  };
+  walk(null, 0);
+  download(`${slug(board.name)}-GDD.md`, out.replace(/\n{3,}/g, '\n\n'), 'text/markdown');
+}
+function pageMd(items, lvl) {
+  const hd = '#'.repeat(lvl);
   const frames = items.filter((i) => i.type === 'frame').sort(byPos);
   const used = new Set();
-  let out = `# ${board.name}\n\n_Сгенерировано в GameDev Board · ${new Date().toLocaleDateString('ru-RU')}_\n\n`;
+  let out = '';
   const titles = items.filter((i) => i.type === 'text' && !frames.some((f) => inside(i, f))).sort(byPos);
   if (titles.length) { out += titles.map((t) => `> ${t.data.text}`).join('\n') + '\n\n'; titles.forEach((t) => used.add(t.id)); }
   for (const f of frames) {
     const kids = items.filter((i) => i.type !== 'frame' && !used.has(i.id) && inside(i, f)).sort(byPos);
     kids.forEach((k) => used.add(k.id));
-    out += `## ${f.data.title || 'Раздел'}\n\n${kids.map(md).filter(Boolean).join('\n\n')}\n\n`;
+    out += `${hd} ${f.data.title || 'Раздел'}\n\n${kids.map(md).filter(Boolean).join('\n\n')}\n\n`;
   }
   const rest = items.filter((i) => i.type !== 'frame' && !used.has(i.id)).sort(byPos);
   if (rest.length) {
     const body = rest.map(md).filter(Boolean).join('\n\n');
-    if (body.trim()) out += `## ${frames.length ? 'Прочее' : 'Содержимое доски'}\n\n${body}\n`;
+    if (body.trim()) out += frames.length ? `${hd} Прочее\n\n${body}\n\n` : `${body}\n\n`;
   }
-  download(`${slug(board.name)}-GDD.md`, out.replace(/\n{3,}/g, '\n\n'), 'text/markdown');
+  return out;
 }
 
 // ---------- JSON для игрового движка ----------
@@ -145,7 +164,7 @@ export function exportEngine(board = store.board) {
 export async function shareLink(board = store.board) {
   const base = location.origin + location.pathname;
   const mk = async (withAssets) => {
-    const b = { name: board.name, items: board.items, links: board.links, view: board.view, assets: withAssets ? board.assets : {} };
+    const b = { name: board.name, items: board.items, links: board.links, tree: board.tree, view: board.view, assets: withAssets ? board.assets : {} };
     return base + '#/s/' + (await compress(JSON.stringify(b)));
   };
   const hasAssets = Object.keys(board.assets || {}).length > 0;

@@ -32,7 +32,7 @@ export const me = loadMe();
 export function setMyName(name) {
   me.name = (name || '').slice(0, 24).trim() || me.name;
   try { localStorage.setItem('gdb-me', JSON.stringify(me)); } catch {}
-  if (collab.active) send({ t: 'ping', user: me });
+  if (collab.active) send({ t: 'ping', user: { ...me, page: store.page } });
 }
 export function brokerSettings() {
   try { const v = JSON.parse(localStorage.getItem('gdb-broker') || 'null'); return v && v.id === 'custom' ? v : { id: 'auto' }; } catch { return { id: 'auto' }; }
@@ -172,7 +172,7 @@ function send(msg, { mqttOnly = false } = {}) {
   const m = { ...msg, f: cid, s: ++seq };
   if (!mqttOnly) rtcSend(m);
   if (!anyOnline()) return;
-  const k = m.t === 'up' || m.t === 'cur' || m.t === 'lup' ? m.t + ':' + (m.item?.id || m.link?.id || m.uid || '') : m.t + ':' + m.s;
+  const k = m.t === 'up' || m.t === 'cur' || m.t === 'lup' || m.t === 'tup' ? m.t + ':' + (m.item?.id || m.link?.id || m.node?.id || m.uid || '') : m.t + ':' + m.s;
   queue.set(k, m);
   // если со всеми участниками есть прямой канал, брокерам можно слать реже (они нужны для опоздавших)
   const delay = m.t === 'rtc' || m.t === 'hello' ? 0 : allDirect() ? 150 : 16;
@@ -228,7 +228,7 @@ async function repairLink(l) {
   if (!l.client?.connected || !collab.synced || store.board?.id !== boardId) return;
   if ((appliedAt.get('snap') || 1) > (l.metaAt.get('snap') || 0) || dirty) {
     const b = store.board;
-    await putBlob('snap', te.encode(JSON.stringify({ name: b.name, items: b.items, links: b.links, at: Date.now(), by: me.name })), l);
+    await putBlob('snap', te.encode(JSON.stringify({ name: b.name, items: b.items, links: b.links, tree: b.tree, at: Date.now(), by: me.name })), l);
   }
   const used = referencedAssets(store.board.items);
   for (const [id, src] of Object.entries(store.board.assets || {})) if (used.has(id) && !l.metaAt.has('asset/' + id)) await putBlob('asset/' + id, assetToBytes(src), l);
@@ -237,7 +237,7 @@ async function repairLink(l) {
 async function publishSnapshot() {
   if (!anyOnline() || !store.board || store.board.id !== boardId) return;
   const b = store.board;
-  const snap = { name: b.name, items: b.items, links: b.links, at: Date.now(), by: me.name };
+  const snap = { name: b.name, items: b.items, links: b.links, tree: b.tree, at: Date.now(), by: me.name };
   await putBlob('snap', te.encode(JSON.stringify(snap)));
   dirty = false;
   // удалить с брокера картинки, на которые больше ничего не ссылается
@@ -307,13 +307,14 @@ function applySnapshot(s) {
   if (!store.board || store.board.id !== boardId) return;
   if (dirty) { scheduleSnapshot(); return; } // у нас есть свои неотправленные правки — отправим их
   const b = store.board;
-  const same = JSON.stringify(b.items) === JSON.stringify(s.items) && JSON.stringify(b.links) === JSON.stringify(s.links);
+  const same = JSON.stringify(b.items) === JSON.stringify(s.items) && JSON.stringify(b.links) === JSON.stringify(s.links) && (!s.tree || JSON.stringify(b.tree) === JSON.stringify(s.tree));
   if (!collab.synced) setTimeout(() => { publishAllAssets(); requestMissing(); }, 3000);
   collab.synced = true;
   clearTimeout(syncTimer);
   if (!same || b.name !== s.name) {
     const wasEmpty = !Object.keys(b.items).length;
     b.items = s.items || {}; b.links = s.links || {}; b.name = s.name || b.name;
+    if (s.tree) b.tree = s.tree;
     if (wasEmpty) setTimeout(() => fitAll(false), 50);
     applying = true;
     store.load(b);
@@ -332,8 +333,8 @@ function handleLive(m) {
   if (seen.has(id)) return;
   seen.set(id, 1);
   if (seen.size > 20000) for (const k of [...seen.keys()].slice(0, 5000)) seen.delete(k);
-  if (m.t === 'up' || m.t === 'rm' || m.t === 'lup' || m.t === 'lrm') {
-    const k = m.f + '|' + (m.item?.id || m.link?.id || m.id);
+  if (m.t === 'up' || m.t === 'rm' || m.t === 'lup' || m.t === 'lrm' || m.t === 'tup' || m.t === 'trm') {
+    const k = m.f + '|' + (m.item?.id || m.link?.id || m.node?.id || m.id);
     if ((lastSeq.get(k) || 0) > m.s) return; // более новая правка этого элемента уже пришла
     lastSeq.set(k, m.s);
   }
@@ -351,8 +352,10 @@ function apply(m) {
       case 'lup': store.upsertLink(m.link, o); break;
       case 'lrm': store.removeLink(m.id, o); break;
       case 'rename': store.rename(m.name, o); break;
-      case 'cur': setRemoteCursor(m.uid, m); touchUser({ id: m.uid, name: m.name, color: m.color, cid: m.f }); break;
-      case 'hello': { const isNew = !collab.users.has(m.user?.id); touchUser({ ...m.user, cid: m.f }); send({ t: 'ping', user: me }); if (isNew) toast(`${m.user.name} подключился`, 'ok', 1800); break; }
+      case 'tup': store.setNode(m.node, o); break;
+      case 'trm': store.removeNode(m.id, o); break;
+      case 'cur': setRemoteCursor(m.uid, m); touchUser({ id: m.uid, name: m.name, color: m.color, cid: m.f, page: m.page }); break;
+      case 'hello': { const isNew = !collab.users.has(m.user?.id); touchUser({ ...m.user, cid: m.f }); send({ t: 'ping', user: { ...me, page: store.page } }); if (isNew) toast(`${m.user.name} подключился`, 'ok', 1800); break; }
       case 'ping': touchUser({ ...m.user, cid: m.f }); break;
       case 'bye': closePeer(m.f); dropUser(m.uid); break;
       case 'need': answerNeed(m.ids || []); break;
@@ -361,9 +364,9 @@ function apply(m) {
 }
 function touchUser(u) {
   if (!u?.id || u.id === me.id) return;
-  const had = collab.users.has(u.id);
-  collab.users.set(u.id, { ...collab.users.get(u.id), ...u, seen: Date.now() });
-  if (!had) emitPresence();
+  const old = collab.users.get(u.id);
+  collab.users.set(u.id, { ...old, ...u, seen: Date.now() });
+  if (!old || (u.page && old.page !== u.page)) emitPresence();
 }
 function dropUser(id) {
   const u = collab.users.get(id);
@@ -490,7 +493,7 @@ export async function connectRoom(board) {
   links = brokersFor(board.room, own).map((b) => ({ ...b, client: null, status: 'connecting', rtt: null, err: '', retryN: 0, retryTimer: null, blobN: new Map(), metaAt: new Map() }));
   refreshStatus(); emitPresence();
   // общие таймеры
-  clearInterval(pingTimer); pingTimer = setInterval(() => send({ t: 'ping', user: me }), 10000);
+  clearInterval(pingTimer); pingTimer = setInterval(() => send({ t: 'ping', user: { ...me, page: store.page } }), 10000);
   clearInterval(sweepTimer); sweepTimer = setInterval(() => {
     const now = Date.now();
     for (const [id, u] of collab.users) if (id !== me.id && now - (u.seen || 0) > 35000) dropUser(id);
@@ -527,7 +530,7 @@ async function dialLink(l) {
     l.blobN.clear(); l.metaAt.clear();
     await client.subscribe(base + '#');
     refreshStatus();
-    send({ t: 'hello', user: me });
+    send({ t: 'hello', user: { ...me, page: store.page } });
     if (dirty) scheduleSnapshot();
     // через пару секунд (когда сервер пришлёт сохранённое) докладываем ему недостающее
     setTimeout(() => { if (l.client === client) repairLink(l).then(() => requestMissing()); }, 3000);
@@ -600,10 +603,13 @@ store.on('remove', (id, o) => { if (local(o)) { send({ t: 'rm', id }); changed()
 store.on('link', (l, o) => { if (local(o)) { send({ t: 'lup', link: l }); changed(); } });
 store.on('unlink', (l, o) => { if (local(o)) { send({ t: 'lrm', id: l.id }); changed(); } });
 store.on('rename', (name, o) => { if (local(o)) { send({ t: 'rename', name }); changed(); } });
+store.on('tree', (node, o) => { if (local(o)) { send({ t: 'tup', node }); changed(); } });
+store.on('treerm', (id, o) => { if (local(o)) { send({ t: 'trm', id }); changed(); } });
+store.on('page', (page) => { if (collab.active) { send({ t: 'ping', user: { ...me, page } }); collab.users.set(me.id, { ...collab.users.get(me.id), ...me, page, seen: Date.now() }); emitPresence(); } });
 store.on('asset', (id, src, o) => { if (local(o)) putBlob('asset/' + id, assetToBytes(src)); });
 
 export function trackCursor(vp) {
-  const sendCur = throttle((x, y) => send({ t: 'cur', uid: me.id, name: me.name, color: me.color, x, y }), 40);
+  const sendCur = throttle((x, y) => send({ t: 'cur', uid: me.id, name: me.name, color: me.color, x, y, page: store.page }), 40);
   vp.addEventListener('pointermove', (e) => {
     if (!collab.active || collab.status !== 'online') return;
     const p = screenToWorld(e.clientX, e.clientY);
