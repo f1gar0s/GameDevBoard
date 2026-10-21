@@ -216,7 +216,9 @@ export async function dropImageOnCard(cardId, file) {
   const asset = store.addAsset(src);
   store.checkpoint();
   const comps = [...it.data.components];
-  const empty = comps.findIndex((c) => (c.type === 'image' || c.type === 'sprite') && !c.data.asset);
+  let empty = comps.findIndex((c) => (c.type === 'image' || c.type === 'sprite') && !c.data.asset);
+  // на карту — как её изображение (метки сохраняются)
+  if (empty < 0) { const mi = comps.findIndex((c) => c.type === 'mapgen'); if (mi >= 0) { comps[mi] = { ...comps[mi], data: { ...comps[mi].data, source: 'image', asset, name: file.name } }; store.patch(cardId, { data: { components: comps } }); toast('Изображение поставлено на карту', 'ok', 1400); return; } }
   if (empty >= 0) {
     const c = comps[empty];
     const extra = c.type === 'sprite' ? { fw: img.width / (c.data.cols || 1), fh: img.height / (c.data.rows || 1) } : { name: file.name };

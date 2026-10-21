@@ -2,7 +2,7 @@
 import { store, pageOf, pathOf, framesInOrder } from './store.js';
 import { WIDGETS, STICKY_COLORS, ACCENT_COLORS } from './widgets.js';
 import { setLinkHandler, autoSig } from './richtext.js';
-import { setToolIcon } from './picker.js';
+import { setToolIcon, openPicker } from './picker.js';
 import { resolveList, dropImageOnCard } from './card.js';
 import { makeCard, liveEnv, toolById } from './tools.js';
 import { h, s, uid, clamp, isTyping, toast, readFileAsDataURL, loadImage, debounce, parseYouTube, youTubeTitle, imageFileToDataURL } from './util.js';
@@ -143,6 +143,15 @@ export function areaToPage(id) {
   moveToPage([id], node.id, false);
   openPage(node.id);
 }
+// Выбрать цель кнопки-ссылки (дерево фреймов и объектов)
+export function pickLinkTarget(id) {
+  const it = store.item(id);
+  const el = nodes.get(id)?.el;
+  if (!it || !el) return;
+  const r = el.getBoundingClientRect();
+  openPicker({ x: r.left, y: r.bottom + 8, current: it.data.target, title: 'Куда ведёт кнопка',
+    onPick: (target) => { store.checkpoint(); store.patch(id, { data: { target } }); buildCtxbar(); } });
+}
 // Перенести элементы в другой фрейм
 export function moveToPage(ids, page, checkpoint = true) {
   if (!store.tree[page] || !ids.length) return;
@@ -177,7 +186,7 @@ function apiFor(id) {
 
 // ---------- отрисовка элементов ----------
 let treeVer = 0; // меняется при переименовании фреймов — для автоссылок в тексте
-const TEXTY = new Set(['sticky', 'text', 'shape', 'card']);
+const TEXTY = new Set(['sticky', 'text', 'shape', 'card', 'linkbtn']);
 function renderKey(it) {
   let k = JSON.stringify(it.data) + '|' + it.w + '|' + it.h;
   if (TEXTY.has(it.type)) k += '|t' + treeVer;
@@ -520,6 +529,32 @@ function buildCtxbar() {
     }, '📄 В отдельный фрейм'));
   }
   if (one === 'card') parts.push(swatches(ACCENT_COLORS, first.data.color, (c) => patchSelected(() => ({ data: { color: c } }))));
+  if (one === 'linkbtn') {
+    const lbl = h('input', { class: 'cx-input', placeholder: 'Надпись на кнопке', value: first.data.label || '', style: { width: '150px' } });
+    lbl.onfocus = () => store.checkpoint();
+    lbl.oninput = () => { for (const it of selectedItems()) store.patch(it.id, { data: { label: lbl.value } }); };
+    lbl.onkeydown = (e) => { if (e.key === 'Enter' || e.key === 'Escape') lbl.blur(); e.stopPropagation(); };
+    parts.push(lbl,
+      h('button', { class: 'cx-btn accent', title: 'Куда ведёт кнопка', onClick: () => pickLinkTarget(first.id) }, '🎯 ' + (first.data.target ? 'Цель' : 'Выбрать цель')),
+      swatches(['#3b82f6', ...ACCENT_COLORS.slice(0, 6)], first.data.color, (c) => patchSelected(() => ({ data: { color: c } }))));
+  }
+  // размер шрифта
+  if (one === 'text' || one === 'sticky' || one === 'shape') {
+    const key = one === 'text' ? 'size' : 'fs';
+    const cur = first.data[key] || '';
+    const fsz = h('input', { class: 'cx-input small', type: 'number', min: 6, max: 400, value: cur, placeholder: one === 'text' ? '24' : 'авто', title: 'Размер шрифта, px' + (one === 'text' ? '' : ' (пусто — подбирается сам)'), style: { width: '62px' } });
+    const apply = (v) => patchSelected((it) => {
+      const n = v === '' ? null : Math.max(6, Math.min(400, Math.round(+v) || 0)) || null;
+      if (one === 'text') { const sz = n || 24; return { data: { size: sz }, h: Math.max(it.h, Math.round(sz * 1.6)) }; }
+      return { data: { fs: n } };
+    });
+    fsz.onchange = () => apply(fsz.value);
+    fsz.onkeydown = (e) => { if (e.key === 'Enter') fsz.blur(); e.stopPropagation(); };
+    const step = (d) => { const base = +(first.data[key] || (one === 'text' ? 24 : 16)); apply(String(Math.max(6, base + d))); };
+    parts.push(h('div', { class: 'cx-group', title: 'Размер шрифта' },
+      h('button', { class: 'cx-btn', title: 'Меньше', onClick: () => step(-2) }, 'A−'), fsz,
+      h('button', { class: 'cx-btn', title: 'Больше', onClick: () => step(2) }, 'A+')));
+  }
   if (one === 'text') {
     parts.push(h('div', { class: 'cx-group' }, [[14, 'S'], [24, 'M'], [40, 'L'], [72, 'XL']].map(([sz, l]) =>
       h('button', { class: 'cx-btn' + (first.data.size === sz ? ' on' : ''), onClick: () => patchSelected((it) => ({ data: { size: sz }, h: Math.max(it.h, sz * 1.6) })) }, l))));
@@ -811,7 +846,7 @@ function onDown(e) {
   const linkEl = e.target.closest('[data-link]');
   switch (tool) {
     case 'select':
-      if (itemEl) { startDrag(e, itemEl.dataset.id); if (gesture?.type === 'drag') gesture.focusEl = rich || (field && field.matches('input, textarea') ? field : null); }
+      if (itemEl) { startDrag(e, itemEl.dataset.id); if (gesture?.type === 'drag') { gesture.focusEl = rich || (field && field.matches('input, textarea') ? field : null); gesture.face = e.target.closest('.lb-face') ? itemEl.dataset.id : null; } }
       else if (linkEl) { selectLink(linkEl.dataset.link); return; }
       else if (e.pointerType === 'touch') startPan(e);
       else startMarquee(e);
@@ -957,6 +992,14 @@ function onUp(e) {
     case 'drag':
       document.querySelectorAll('.item.drop-target').forEach((n) => n.classList.remove('drop-target'));
       if (!g.moved) {
+        // кнопка-ссылка: клик (без перетаскивания) — переход
+        if (g.face && !g.shift) {
+          const lb = store.item(g.face);
+          if (lb?.data.target && (store.tree[lb.data.target] || store.item(lb.data.target))) { goTo(lb.data.target); return; }
+          selectOnly(g.face);
+          pickLinkTarget(g.face);
+          return;
+        }
         if (!g.shift && sel.size > 1) selectOnly(g.clickId);
         if (g.focusEl?.isConnected && sel.size === 1 && g.focusEl._edit) { g.focusEl._edit(e.clientX, e.clientY); return; }
         if (g.focusEl?.isConnected && sel.size === 1) { g.focusEl.focus(); if (g.focusEl.select && g.focusEl.type !== 'number' && g.focusEl.tagName === 'INPUT') g.focusEl.select(); }
@@ -1229,7 +1272,7 @@ export function initCanvas() {
     if (selLink === l.id) { selLink = null; updateSelUI(true); }
   });
   store.on('asset', (id) => {
-    for (const it of Object.values(store.items)) if (it.data.asset === id) mountItem(it, true);
+    for (const it of Object.values(store.items)) if (it.data.asset === id || (it.type === 'card' && JSON.stringify(it.data.components || []).includes('"' + id + '"'))) mountItem(it, true);
   });
   window.addEventListener('resize', () => positionCtxbar());
 }

@@ -5,7 +5,7 @@ import { store, childrenOf, pageOf } from './store.js';
 
 let el = null, opts = null;
 const openFrames = new Set();
-const ICON = { card: '▭', frame: '▢', text: 'T', sticky: '🗒', shape: '◆', dialogue: '💬' };
+const ICON = { card: '▭', frame: '▢', text: 'T', sticky: '🗒', shape: '◆', dialogue: '💬', linkbtn: '🔘' };
 let toolIcon = () => null;
 export const setToolIcon = (fn) => { toolIcon = fn; };
 
@@ -14,6 +14,7 @@ export function objectLabel(it) {
   const d = it.data || {};
   if (it.type === 'card') return clean(d.title) || 'Карточка';
   if (it.type === 'frame') return clean(d.title) || 'Область';
+  if (it.type === 'linkbtn') return '🔘 ' + (clean(d.label) || 'Кнопка');
   if (it.type === 'dialogue') return (d.speaker ? d.speaker + ': ' : '') + (clean(d.text).slice(0, 50) || 'реплика');
   return clean(d.text).slice(0, 50);
 }

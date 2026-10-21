@@ -1,6 +1,6 @@
 // Типы элементов доски и их отрисовка
 import { h, s, clamp, toast, readFileAsDataURL, loadImage } from './util.js';
-import { store, pageOf } from './store.js';
+import { store, pageOf, pathOf } from './store.js';
 import { richText, plain } from './richtext.js';
 import { playDialogue } from './play.js';
 import { isEntry, isPlayer, checkCond, checkActs } from './dialogfmt.js';
@@ -47,6 +47,16 @@ export function editable(api, key, { cls = '', placeholder = '', links = true } 
   });
 }
 
+// название цели ссылки: путь фрейма или подпись объекта (+ фрейм, где он лежит)
+export function targetName(id) {
+  const n = store.tree?.[id];
+  if (n) return pathOf(store.tree, id).join(' / ');
+  const it = store.item(id);
+  if (!it) return null;
+  const name = plain(it.data.title || it.data.label || it.data.text || '').slice(0, 40) || WIDGETS[it.type]?.label || 'объект';
+  return name + ' · 📄 ' + (store.tree?.[pageOf(it)]?.name || '');
+}
+
 const head = (icon, label, color, ...extra) =>
   h('div', { class: 'card-head', style: { '--c': color } }, h('span', { class: 'card-kind' }, icon, ' ', label), ...extra);
 
@@ -57,8 +67,8 @@ export const WIDGETS = {
     data: () => ({ text: '', color: STICKY_COLORS[0] }),
     title: (d) => d.text,
     render(it, api) {
-      const len = (it.data.text || '').length;
-      const fs = len < 30 ? 20 : len < 90 ? 15 : len < 200 ? 13 : 11;
+      const len = plain(it.data.text || '').length;
+      const fs = it.data.fs || (len < 30 ? 20 : len < 90 ? 15 : len < 200 ? 13 : 11); // fs — размер, заданный вручную
       const dark = it.data.color === '#475569';
       return h('div', { class: 'sticky' + (dark ? ' dark' : ''), style: { background: it.data.color, fontSize: fs + 'px' } },
         editable(api, 'text', { placeholder: 'Двойной клик — писать' }));
@@ -88,7 +98,25 @@ export const WIDGETS = {
       el.setAttribute('fill', color + '33');
       el.setAttribute('stroke', color);
       el.setAttribute('stroke-width', 2.5);
-      return h('div', { class: 'shape' }, s('svg', { width: w, height: hh, class: 'shape-svg' }, el), editable(api, 'text', { cls: 'shape-text', placeholder: '' }));
+      const txt = editable(api, 'text', { cls: 'shape-text', placeholder: '' });
+      if (it.data.fs) txt.style.fontSize = it.data.fs + 'px';
+      return h('div', { class: 'shape' }, s('svg', { width: w, height: hh, class: 'shape-svg' }, el), txt);
+    },
+  },
+  // Кнопка-ссылка на доске: клик — перейти к фрейму или объекту; ⚙ — выделить и настроить
+  linkbtn: {
+    label: 'Кнопка-ссылка', icon: '🔘', w: 220, h: 56, min: [90, 36],
+    data: () => ({ label: 'Перейти', target: null, color: '#3b82f6' }),
+    title: (d) => d.label,
+    deps: (it) => [it.data.target],
+    render(it) {
+      const d = it.data;
+      const t = d.target ? targetName(d.target) : null;
+      return h('div', { class: 'linkobj', style: { '--bc': d.color || '#3b82f6' } },
+        h('div', { class: 'lb-face', title: t ? 'Перейти: ' + t : 'Цель не выбрана — нажмите ⚙' },
+          h('span', { class: 'lb-label' }, d.label || 'Перейти'), h('span', { class: 'lb-arrow' }, '→')),
+        h('button', { class: 'lb-gear', title: 'Настроить кнопку' }, '⚙'),
+        h('div', { class: 'lb-target-cap' + (t ? '' : ' none') }, t ? (store.tree?.[d.target] ? '📄 ' : '→ ') + t : d.target ? '⚠ цель удалена' : 'цель не выбрана'));
     },
   },
   frame: {

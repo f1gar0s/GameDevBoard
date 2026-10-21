@@ -3,7 +3,7 @@ import { store, DB, newBoard } from './store.js';
 import { h, s, toast, modal, prompt2, timeAgo, debounce, download } from './util.js';
 import {
   initCanvas, setTool, onToolChange, tool, pen, view, onViewChange, zoomBy, setZoom, fitAll, focusItem,
-  createItem, centerWorld, pasteClip, startEditing, onSelection, sel, bboxOf, findFreeSpot, createTool, addVideo,
+  createItem, centerWorld, pasteClip, startEditing, onSelection, sel, bboxOf, findFreeSpot, createTool, addVideo, pickLinkTarget,
 } from './canvas.js';
 import { WIDGETS, textOf, titleOf, ACCENT_COLORS, parseSeries } from './widgets.js';
 import { TEMPLATES, buildTemplate } from './templates.js';
@@ -59,7 +59,7 @@ async function renderHome() {
     ['💬', 'Плейтест диалогов', 'Соберите граф реплик и пройдите его как игрок прямо на доске'],
     ['▾', 'Выпадающие списки', 'Варианты с цветами живут в отдельной карточке-списке и общие для всей доски'],
     ['🐞', 'Баги и задачи', 'Приоритет, готовность, кто оставил и кто решает; канбан по фреймам'],
-    ['🗺', 'Генератор карт 2D', 'Средневековая или современная карта по зерну, экспорт PNG'],
+    ['🗺', 'Карты с метками', 'Мир (континент, острова, архипелаг…), город или своё изображение; метки ведут на фреймы и другие карты'],
     ['🖌', 'Холст со слоями', 'Кисть, линии, фигуры, слои с перетаскиванием, экспорт PNG'],
     ['🎮', 'Экспорт в движок', 'JSON для Unity / Godot, диалоги по файлам и GDD в Markdown'],
     ['👥', 'Совместный доступ', 'Доска по ссылке прямо на GitHub Pages: правки и курсоры в реальном времени, шифрование']
@@ -162,7 +162,7 @@ function insertTemplate(t, at) {
 }
 function buildLibrary() {
   const lib = $('#library');
-  const BASIC = [['sticky', 'Стикер', '🗒'], ['text', 'Текст', 'T'], ['shape', 'Фигура', '◆'], ['frame', 'Область', '▢'], ['video', 'Видео', '▶']];
+  const BASIC = [['sticky', 'Стикер', '🗒'], ['text', 'Текст', 'T'], ['shape', 'Фигура', '◆'], ['frame', 'Область', '▢'], ['linkbtn', 'Кнопка-ссылка', '🔘'], ['video', 'Видео', '▶']];
   const toolTile = (t) => h('button', {
     class: 'lib-tile', draggable: 'true', title: (t.desc ? t.desc + '. ' : '') + 'Клик — добавить, или перетащите на доску',
     onClick: () => {
@@ -184,12 +184,14 @@ function buildLibrary() {
         if (it) focusItem(it.id); else toast('Не похоже на ссылку YouTube, RuTube или VK Видео', 'err');
         return;
       }
-      const it = createItem(type, findFreeSpot(centerWorld(), W.w, W.h)); if (it) { focusItem(it.id); startEditing(it.id); }
+      const it = createItem(type, findFreeSpot(centerWorld(), W.w, W.h));
+      if (it && type === 'linkbtn') { focusItem(it.id); setTimeout(() => pickLinkTarget(it.id), 350); }
+      else if (it) { focusItem(it.id); startEditing(it.id); }
     },
     onDragstart: (e) => e.dataTransfer.setData('application/x-gdb', JSON.stringify({ type })),
   }, h('span', { class: 'lt-i' }, icon), h('span', {}, label));
   const groups = [];
-  for (const t of TOOLS) { let g = groups.find((x) => x.name === t.group); if (!g) groups.push((g = { name: t.group, tools: [] })); g.tools.push(t); }
+  for (const t of TOOLS) { if (t.hidden) continue; let g = groups.find((x) => x.name === t.group); if (!g) groups.push((g = { name: t.group, tools: [] })); g.tools.push(t); }
   lib.replaceChildren(
     h('div', { class: 'drawer-head' }, h('b', {}, 'Инструменты'), h('button', { class: 'icon-btn', onClick: () => toggleLibrary(false) }, '✕')),
     h('div', { class: 'drawer-body scroll' },
@@ -472,7 +474,9 @@ function showHelp() {
       h('li', {}, 'Область может сама раскладывать объекты: в строку (HBox), в столбец (VBox) или сеткой — как контейнеры в Godot. Выберите режим на панели над областью.'),
       h('li', {}, 'Область можно сделать колонкой канбана (панель над областью): карточка, брошенная в неё, получит вариант с названием области, например «В работе».'),
       h('li', {}, 'Уровень: левая кнопка рисует выбранным тайлом, правая стирает. Холст: слои перетаскиваются за ⠿.'),
-      h('li', {}, 'Кривая баланса: каждая строка «Имя: формула» от lvl, например «Урон: 10 + lvl^1.3».'),
+      h('li', {}, 'Кривая баланса: «+ Формула» добавляет строку «Имя = формула от lvl» (например «Урон = 10 + lvl^1.3»); справа — значение на выбранном уровне, ▦ — таблица значений.'),
+      h('li', {}, 'Карта: 🌍 мир, 🏘 город или 🖼 своё изображение. «📍 Метки» — клик по карте ставит метку; у метки можно задать значок, подпись и ссылку на фрейм, объект или другую карту.'),
+      h('li', {}, 'Кнопка-ссылка (＋ Инстр. → Базовые): клик — переход, ⚙ — настроить надпись, цвет и цель.'),
       h('li', {}, 'Экспорт → «Данные для движка» отдаёт JSON с персонажами, предметами, диалогами, уровнями и таблицами.'))), { wide: true });
 }
 

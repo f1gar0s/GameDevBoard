@@ -76,7 +76,7 @@ const dd = (env, key, label, valueText = null) => {
 
 // ---------- список инструментов ----------
 export const TOOLS = [
-  { id: 'empty', name: 'Карточка', icon: '▭', group: 'Основа', w: 280, desc: 'Название и текст с гиперссылками на фреймы и объекты', make: (env, o) => [comp('text', { text: o.text ?? '', placeholder: 'Текст… выделите слова и нажмите 🔗, чтобы сделать ссылку', multiline: true })] },
+  { id: 'empty', hidden: true, name: 'Карточка', icon: '▭', group: 'Основа', w: 280, desc: 'Название и текст с гиперссылками на фреймы и объекты', make: (env, o) => [comp('text', { text: o.text ?? '', placeholder: 'Текст… выделите слова и нажмите 🔗, чтобы сделать ссылку', multiline: true })] },
   { id: 'dialogue', name: 'Реплика (диалог)', icon: '💬', group: 'Геймдизайн', standalone: 'dialogue', desc: 'Диалоговая система: стрелки — варианты ответа, ▶ плейтест' },
   { id: 'character', name: 'Персонаж', icon: '🧙', group: 'Геймдизайн', w: 290, make: (env, o) => [comp('character', o.data)] },
   { id: 'item', name: 'Предмет', icon: '🗡', group: 'Геймдизайн', w: 270, make: (env, o) => [comp('item', o.data)] },
@@ -102,7 +102,8 @@ export const TOOLS = [
   },
   { id: 'table', name: 'Таблица', icon: '▦', group: 'Данные', w: 440, make: (env, o) => [comp('table', o.data)] },
   { id: 'list', name: 'Список для выпадающих', icon: '☰', group: 'Данные', w: 240, color: '#94a3b8', desc: 'Варианты (текст + цвет) для компонента «Выпадающий список»', make: (env, o) => [comp('list', o.data)] },
-  { id: 'mapgen', name: 'Генератор карт 2D', icon: '🗺', group: 'Уровни и баланс', w: 460, color: '#22d3a6', make: (env, o) => [comp('mapgen', o.data)] },
+  { id: 'mapgen', name: 'Карта', icon: '🗺', group: 'Уровни и баланс', w: 480, color: '#22d3a6', desc: 'Сгенерировать мир или загрузить своё изображение; метки-ссылки', make: (env, o) => [comp('mapgen', o.data)] },
+  { id: 'citymap', name: 'Карта города', icon: '🏘', group: 'Уровни и баланс', w: 480, color: '#22d3a6', desc: 'Сгенерированный город: средневековый или современный; метки-ссылки', make: (env, o) => [comp('mapgen', { kind: 'city', city: 'medieval', ...o.data })] },
   { id: 'tilemap', name: 'Уровень (тайлы)', icon: '🧱', group: 'Уровни и баланс', w: 460, color: '#3b82f6', make: (env, o) => [comp('tilemap', o.data)] },
   { id: 'curve', name: 'Кривая баланса', icon: '📈', group: 'Уровни и баланс', w: 400, make: (env, o) => [comp('curve', o.data)] },
   {

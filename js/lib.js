@@ -57,7 +57,7 @@ export function parseSeries(text) {
     const expr = m ? m[2] : line;
     try { out.push({ name, fn: compileFormula(expr), expr: expr.trim() }); }
     catch (e) { out.push({ name, error: e.message, expr: expr.trim() }); }
-    if (out.length >= 4) break;
+    if (out.length >= 8) break;
   }
   return out;
 }
@@ -69,8 +69,8 @@ export function sampleSeries(series, from, to) {
   for (let x = from; x <= to; x += step) xs.push(x);
   return series.filter((s) => s.fn).map((s) => ({ ...s, pts: xs.map((x) => { let y; try { y = +s.fn(x); } catch { y = NaN; } return [x, isFinite(y) ? y : NaN]; }) }));
 }
-const SERIES_COLORS = ['#7c5cff', '#22d3a6', '#f59e0b', '#ef4444'];
-const fmt = (v) => { const a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : a >= 1e3 ? (v / 1e3).toFixed(a >= 1e4 ? 0 : 1) + 'k' : a >= 100 ? Math.round(v).toString() : a >= 10 ? v.toFixed(1).replace(/\.0$/, '') : (Math.round(v * 100) / 100).toString(); };
+export const SERIES_COLORS = ['#7c5cff', '#22d3a6', '#f59e0b', '#ef4444', '#3b82f6', '#ec4899', '#a3e635', '#94a3b8'];
+export const fmt = (v) => { const a = Math.abs(v); return a >= 1e6 ? (v / 1e6).toFixed(1) + 'M' : a >= 1e3 ? (v / 1e3).toFixed(a >= 1e4 ? 0 : 1) + 'k' : a >= 100 ? Math.round(v).toString() : a >= 10 ? v.toFixed(1).replace(/\.0$/, '') : (Math.round(v * 100) / 100).toString(); };
 
 export function drawChart(holder, data, W = 300, H = 160) {
   const sampled = sampleSeries(parseSeries(data.formula), data.from, data.to);
