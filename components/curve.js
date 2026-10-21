@@ -14,7 +14,7 @@ export default {
     lib.drawChart(holder, ctx.data, W, H);
     return h('div', { class: 'cx-curve' },
       ctx.field('title', { cls: 'title', placeholder: 'Название' }),
-      ctx.field('formula', { tag: 'textarea', cls: 'mono', rows: 2, autosize: true, placeholder: 'Имя: формула от lvl, напр. 50*lvl^2', onLive: redraw }),
+      ctx.field('formula', { tag: 'textarea', rich: false, cls: 'mono', rows: 2, autosize: true, placeholder: 'Имя: формула от lvl, напр. 50*lvl^2', onLive: redraw }),
       h('div', { class: 'row' }, 'lvl от', ctx.field('from', { type: 'number', num: true, cls: 'num', onLive: redraw }), 'до', ctx.field('to', { type: 'number', num: true, cls: 'num', onLive: redraw }),
         h('span', { class: 'help', title: 'Переменная: lvl (или x). Доступно: + - * / ^ %, floor, round, sqrt, log, pow, min, max, abs, clamp(v,a,b), lerp(a,b,t), PI, E и a ? b : c. Каждая строка — отдельная кривая «Имя: формула».' }, '?')),
       holder);

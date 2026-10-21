@@ -1,15 +1,17 @@
-// Карточка — контейнер компонентов (как GameObject в Unity).
-// Компоненты рисуются сверху вниз, их можно переставлять, настраивать (⚙) и удалять.
+// Карточка — объект доски (баг, задача, персонаж, предмет…) с фиксированным набором полей.
+// Поля описаны модулями в папке components/ (это внутреннее устройство — в интерфейсе их нельзя
+// добавлять, переставлять и удалять). Настройки полей открываются одной шестерёнкой ⚙ в шапке карточки.
 import { h, s, uid, clamp, toast, download, modal, readFileAsDataURL, loadImage, imageFileToDataURL, parseYouTube, youTubeTitle } from './util.js';
 import { store, pageOf, pathOf, framesInOrder } from './store.js';
 import { getComponent, allComponents, callWithBase } from './registry.js';
 import * as lib from './lib.js';
 import { focusItem, goTo, openPage } from './canvas.js';
 import { liveEnv, TOOLS, makeCard } from './tools.js';
+import { richText } from './richtext.js';
+import { openPicker } from './picker.js';
 import { findFreeSpot } from './canvas.js';
 
-export const openSettings = new Set(); // id компонентов с открытой шестерёнкой
-let addMenuFor = null; // id карточки с открытым меню «+ Компонент»
+export const openSettings = new Set(); // id карточек в режиме настройки (⚙)
 
 // ---------- списки для выпадающих меню ----------
 export function listsOnBoard() {
@@ -69,7 +71,18 @@ export function cardField(card, label) {
 }
 
 // ---------- поле ввода, связанное с данными компонента ----------
-function fieldEl(ctx, key, { tag = 'input', cls = '', placeholder = '', type = 'text', num = false, rows, onLive, autosize = false, commit = false } = {}) {
+function fieldEl(ctx, key, { tag = 'input', cls = '', placeholder = '', type = 'text', num = false, rows, onLive, autosize = false, commit = false, rich = true } = {}) {
+  // многострочный текст — с гиперссылками (выделить слова → 🔗, или автоссылки на фреймы)
+  if (tag === 'textarea' && rich) {
+    return richText({
+      cls: 'f rt-field ' + cls, placeholder,
+      value: () => resolveComp({ card: ctx.cardId, comp: ctx.compId })?.data[key] ?? '',
+      selfPage: () => pageOf(store.item(ctx.cardId)),
+      onBegin: () => ctx.begin(),
+      onLive: (v) => { ctx.live({ [key]: v }); onLive?.(v); },
+      onCommit: (v) => ctx.set({ [key]: v }),
+    });
+  }
   const v = ctx.data[key];
   const el = h(tag, { class: 'f ' + cls, placeholder, type: tag === 'input' ? type : null, rows, value: v ?? '' });
   const grow = () => { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; };
@@ -126,122 +139,34 @@ function makeCtx(cardIt, comp, api) {
       return card;
     },
     ensureList: (title, options) => liveEnv(store.item(cardId)).ensureList(title, options),
-    settingsOpen: openSettings.has(compId),
-    toggleSettings: () => { openSettings.has(compId) ? openSettings.delete(compId) : openSettings.add(compId); api.rerender(); },
+    settingsOpen: openSettings.has(cardId),
+    toggleSettings: () => { openSettings.has(cardId) ? openSettings.delete(cardId) : openSettings.add(cardId); api.rerender(); },
+    pick: (o) => openPicker(o),
   };
   return ctx;
 }
 
-// ---------- операции над списком компонентов ----------
-function setComps(api, comps) {
-  if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur?.();
-  api.change({ components: comps });
-  api.rerender();
-}
-function moveComp(api, it, id, dir) {
-  const arr = [...it.data.components];
-  const i = arr.findIndex((c) => c.id === id), j = i + dir;
-  if (i < 0 || j < 0 || j >= arr.length) return;
-  [arr[i], arr[j]] = [arr[j], arr[i]];
-  setComps(api, arr);
-}
-function reorderComp(api, it, id, targetId, after) {
-  const arr = [...it.data.components];
-  const i = arr.findIndex((c) => c.id === id);
-  if (i < 0) return;
-  const [c] = arr.splice(i, 1);
-  let j = arr.findIndex((x) => x.id === targetId);
-  if (j < 0) return;
-  if (after) j++;
-  arr.splice(j, 0, c);
-  setComps(api, arr);
-}
 export function newComponent(type, data = {}) {
   const def = getComponent(type);
   return { id: uid('c'), type, data: { ...(def?.defaults?.() || {}), ...data } };
 }
-function addComp(api, it, type) {
-  const def = getComponent(type);
-  const comp = newComponent(type);
-  if (def?.openOnAdd) openSettings.add(comp.id);
-  addMenuFor = null;
-  setComps(api, [...it.data.components, comp]);
-}
 
 // ---------- отрисовка ----------
-const GROUP_ORDER = ['Базовые', 'Данные', 'Геймдизайн', 'Уровни и баланс', 'Арт'];
-
-function addMenu(it, api) {
-  const groups = new Map();
-  for (const d of allComponents()) {
-    const g = d.group || 'Другое';
-    if (!groups.has(g)) groups.set(g, []);
-    groups.get(g).push(d);
-  }
-  const order = [...groups.keys()].sort((a, b) => (GROUP_ORDER.indexOf(a) + 1 || 99) - (GROUP_ORDER.indexOf(b) + 1 || 99));
-  return h('div', { class: 'add-menu' },
-    order.map((g) => h('div', { class: 'am-group' }, h('div', { class: 'am-gt' }, g),
-      groups.get(g).map((d) => h('button', { class: 'am-item', title: d.description || '', onClick: () => addComp(api, it, d.type) },
-        h('span', { class: 'am-i' }, d.icon || '▪'), h('span', {}, d.name || d.type),
-        d.extends ? h('small', { class: 'muted' }, ' ← ' + (getComponent(d.extends)?.name || d.extends)) : null)))),
-    h('button', { class: 'am-close', onClick: () => { addMenuFor = null; api.rerender(); } }, 'Закрыть'));
-}
-
-function compBlock(it, comp, api, idx, total) {
+function fieldBlock(it, comp, api, setMode) {
   const def = getComponent(comp.type);
   const ctx = makeCtx(it, comp, api);
   let body;
   try {
-    body = def ? callWithBase(def, 'render', ctx) : h('div', { class: 'comp-err' }, `Компонент «${comp.type}» не найден в папке components`);
+    body = def ? callWithBase(def, 'render', ctx) : h('div', { class: 'comp-err' }, `Поле «${comp.type}» не найдено`);
   } catch (e) {
     console.error(e);
-    body = h('div', { class: 'comp-err' }, `Ошибка в компоненте «${def?.name || comp.type}»: ${e.message}`);
+    body = h('div', { class: 'comp-err' }, `Ошибка в поле «${def?.name || comp.type}»: ${e.message}`);
   }
-  const wrap = h('div', { class: 'comp c-' + comp.type, 'data-comp': comp.id });
-  const grip = h('span', { class: 'comp-grip no-drag', title: 'Перетащите, чтобы переставить' }, '⠿');
-  grip.addEventListener('pointerdown', (e) => {
-    e.stopPropagation(); e.preventDefault();
-    grip.setPointerCapture(e.pointerId);
-    const list = wrap.parentElement;
-    let target = null, after = false;
-    wrap.classList.add('dragging-comp');
-    const clear = () => list.querySelectorAll('.drop-before, .drop-after').forEach((x) => x.classList.remove('drop-before', 'drop-after'));
-    const move = (ev) => {
-      clear();
-      const el = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('.comp');
-      target = null;
-      if (el && el.parentElement === list && el !== wrap) {
-        const r = el.getBoundingClientRect();
-        after = ev.clientY > r.top + r.height / 2;
-        el.classList.add(after ? 'drop-after' : 'drop-before');
-        target = el.dataset.comp;
-      }
-    };
-    const up = () => {
-      grip.removeEventListener('pointermove', move);
-      clear();
-      wrap.classList.remove('dragging-comp');
-      if (target) reorderComp(api, store.item(it.id), comp.id, target, after);
-    };
-    grip.addEventListener('pointermove', move);
-    grip.addEventListener('pointerup', up, { once: true });
-    grip.addEventListener('pointercancel', up, { once: true });
-  });
-  const open = openSettings.has(comp.id);
-  wrap.append(
-    h('div', { class: 'comp-bar' }, grip,
-      h('span', { class: 'comp-name' }, (def?.icon || '▪') + ' ' + (def?.name || comp.type)),
-      h('span', { class: 'grow' }),
-      def?.settings ? h('button', { class: 'cb-btn' + (open ? ' on' : ''), title: 'Настройки компонента', onClick: () => ctx.toggleSettings() }, '⚙') : null,
-      h('button', { class: 'cb-btn', title: 'Выше', disabled: idx === 0, onClick: () => moveComp(api, store.item(it.id), comp.id, -1) }, '↑'),
-      h('button', { class: 'cb-btn', title: 'Ниже', disabled: idx === total - 1, onClick: () => moveComp(api, store.item(it.id), comp.id, 1) }, '↓'),
-      h('button', { class: 'cb-btn danger', title: 'Удалить компонент', onClick: () => { openSettings.delete(comp.id); setComps(api, store.item(it.id).data.components.filter((c) => c.id !== comp.id)); } }, '×')),
-    h('div', { class: 'comp-body' }, body));
-  if (open && def?.settings) {
+  const wrap = h('div', { class: 'fld c-' + comp.type, 'data-comp': comp.id }, body);
+  if (setMode && def?.settings) {
     let st;
     try { st = callWithBase(def, 'settings', ctx); } catch (e) { st = h('div', { class: 'comp-err' }, e.message); }
-    wrap.append(h('div', { class: 'comp-settings' }, st,
-      h('button', { class: 'ghost-btn', onClick: () => ctx.toggleSettings() }, 'Готово')));
+    wrap.append(h('div', { class: 'fld-settings' }, h('div', { class: 'fld-settings-t' }, (def.icon || '▪') + ' ' + (comp.data.label || def.name || comp.type)), st));
   }
   return wrap;
 }
@@ -268,17 +193,15 @@ export const CARD = {
     const d = it.data;
     const tool = TOOLS.find((t) => t.id === d.tool);
     const comps = d.components || [];
-    const title = h('input', { class: 'f gcard-title', value: d.title || '', placeholder: 'Название карточки' });
+    const title = h('input', { class: 'f gcard-title', value: d.title || '', placeholder: 'Название' });
     title.onfocus = () => store.checkpoint();
     title.oninput = () => api.live({ title: title.value });
-    const root = h('div', { class: 'gcard', style: { '--c': d.color || '#7c5cff' } },
+    const setMode = openSettings.has(it.id);
+    const hasSettings = comps.some((c) => getComponent(c.type)?.settings);
+    return h('div', { class: 'gcard' + (setMode ? ' setmode' : ''), style: { '--c': d.color || '#7c5cff' } },
       h('div', { class: 'gcard-head' }, h('span', { class: 'gcard-icon' }, tool?.icon || '▭'), title,
-        h('span', { class: 'gcard-count', title: 'Компонентов на карточке' }, comps.length || '')),
-      h('div', { class: 'comps' }, comps.map((c, i) => compBlock(it, c, api, i, comps.length))),
-      addMenuFor === it.id ? addMenu(it, api)
-        : h('button', { class: 'add-comp' + (comps.length ? '' : ' big'), onClick: () => { addMenuFor = it.id; api.rerender(); } },
-          comps.length ? '+ Компонент' : '+ Добавить компонент'));
-    return root;
+        hasSettings ? h('button', { class: 'gcard-gear' + (setMode ? ' on' : ''), title: setMode ? 'Готово' : 'Настроить поля (списки, подписи, размеры)', onClick: () => { setMode ? openSettings.delete(it.id) : openSettings.add(it.id); api.rerender(); } }, setMode ? '✓' : '⚙') : null),
+      comps.length ? h('div', { class: 'fields' }, comps.map((c) => fieldBlock(it, c, api, setMode))) : null);
   },
 };
 
@@ -298,7 +221,15 @@ export async function dropImageOnCard(cardId, file) {
     const c = comps[empty];
     const extra = c.type === 'sprite' ? { fw: img.width / (c.data.cols || 1), fh: img.height / (c.data.rows || 1) } : { name: file.name };
     comps[empty] = { ...c, data: { ...c.data, asset, ...extra } };
-  } else comps.push(newComponent('image', { asset, name: file.name }));
+  } else {
+    // свободного поля «Картинка» нет — кладём картинку рядом с карточкой отдельным объектом
+    const k = Math.min(1, 320 / img.width);
+    const w = Math.round(img.width * k), hh = Math.round(img.height * k);
+    const p = findFreeSpot({ x: it.x + it.w + 40 + w / 2, y: it.y + hh / 2 }, w, hh);
+    store.upsert({ id: uid('i'), type: 'image', x: Math.round(p.x - w / 2), y: Math.round(p.y - hh / 2), w, h: hh, z: store.maxZ() + 1, data: { asset, name: file.name } });
+    toast('Картинка добавлена рядом с карточкой', 'ok', 1400);
+    return;
+  }
   store.patch(cardId, { data: { components: comps } });
   toast('Картинка добавлена в карточку', 'ok', 1400);
 }

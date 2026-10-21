@@ -42,16 +42,11 @@ export default {
 
   settings(ctx) {
     const { h, data: d } = ctx;
-    const pages = ctx.pages();
-    const pageName = (it) => { const p = ctx.pageOf(it); return p === ctx.pageOf(ctx.card) ? '' : '  · ' + ctx.pathOf(p).join(' / '); };
-    const areas = ctx.frames();
-    const cards = Object.values(ctx.store.items).filter((i) => i.type === 'card' && i.id !== ctx.cardId);
-    const sel = h('select', { class: 'f sel wide' },
-      h('option', { value: '' }, '— выберите, куда переносить —'),
-      pages.length ? h('optgroup', { label: 'Фреймы (иерархия)' }, pages.map((p) => h('option', { value: p.id, selected: d.target === p.id }, '📄 ' + p.path))) : null,
-      areas.length ? h('optgroup', { label: 'Области на холсте' }, areas.map((f) => h('option', { value: f.id, selected: d.target === f.id }, (f.data.title || 'Область') + pageName(f)))) : null,
-      cards.length ? h('optgroup', { label: 'Карточки' }, cards.map((c) => h('option', { value: c.id, selected: d.target === c.id }, (c.data.title || 'Карточка') + pageName(c)))) : null);
-    sel.onchange = () => ctx.change({ target: sel.value || null });
+    const t = describe(ctx, d.target);
+    const sel = h('button', { class: 'f pick-btn', onClick: (e) => {
+      const r = e.currentTarget.getBoundingClientRect();
+      ctx.pick({ x: r.left, y: r.bottom + 4, current: d.target, title: 'Куда ведёт кнопка', onPick: (id) => ctx.change({ target: id }) });
+    } }, t ? (t.kind === 'page' ? '📄 ' + t.name : '▭ ' + t.name + (t.where ? ' · 📄 ' + t.where : '')) : 'Выбрать фрейм или объект…');
     const color = h('input', { type: 'color', value: d.color || '#7c5cff' });
     color.onchange = () => ctx.change({ color: color.value });
     return h('div', { class: 'set-grid' },

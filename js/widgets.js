@@ -1,6 +1,7 @@
 // Типы элементов доски и их отрисовка
 import { h, s, clamp, toast, readFileAsDataURL, loadImage } from './util.js';
-import { store } from './store.js';
+import { store, pageOf } from './store.js';
+import { richText, plain } from './richtext.js';
 import { playDialogue } from './play.js';
 import { isEntry, isPlayer, checkCond, checkActs } from './dialogfmt.js';
 
@@ -33,57 +34,17 @@ function select(api, key, options, { cls = '', onChange } = {}) {
   return el;
 }
 
-// [[Имя фрейма]] в тексте — ссылка: клик открывает фрейм (или объект с таким названием)
-const LINK_RE = /\[\[([^\[\]\n]{1,120})\]\]/g;
-let goToFn = null;
-export const setLinkHandler = (fn) => { goToFn = fn; };
-function fillText(el, text, links) {
-  if (!links || !text.includes('[[')) { el.textContent = text; return; }
-  const parts = [];
-  let last = 0;
-  for (const m of text.matchAll(LINK_RE)) {
-    if (m.index > last) parts.push(text.slice(last, m.index));
-    const target = m[1].trim();
-    parts.push(h('a', { class: 'plink', href: '#', 'data-target': target, title: 'Перейти: ' + target }, target));
-    last = m.index + m[0].length;
-  }
-  if (last < text.length) parts.push(text.slice(last));
-  el.replaceChildren(...parts);
-}
+// Текст элемента доски: двойной клик — править; выделите слова → «🔗 Ссылка» (или Ctrl+K), чтобы сослаться
+// на фрейм или объект; слова, совпадающие с названием фрейма, становятся ссылками сами.
 export function editable(api, key, { cls = '', placeholder = '', links = true } = {}) {
-  const el = h('div', { class: 'editable ' + cls, 'data-placeholder': placeholder });
-  fillText(el, api.item.data[key] || '', links);
-  el.addEventListener('click', (e) => {
-    const a = e.target.closest('.plink');
-    if (!a || el.isContentEditable) return;
-    e.preventDefault();
-    e.stopPropagation();
-    goToFn?.(a.dataset.target);
+  return richText({
+    cls, placeholder, auto: links, selectAll: true,
+    value: () => api.item?.data[key] || '',
+    selfPage: () => pageOf(api.item),
+    onBegin: () => api.begin(),
+    onLive: (v) => api.live({ [key]: v }),
+    onCommit: (v) => api.set({ [key]: v }),
   });
-  el._edit = () => {
-    el.textContent = api.item.data[key] || '';
-    try { el.contentEditable = 'plaintext-only'; } catch { el.contentEditable = 'true'; }
-    if (!el.isContentEditable) el.contentEditable = 'true';
-    api.begin();
-    el.focus();
-    const r = document.createRange();
-    r.selectNodeContents(el);
-    const sel = getSelection();
-    sel.removeAllRanges();
-    sel.addRange(r);
-  };
-  el.addEventListener('input', () => api.live({ [key]: el.innerText }));
-  el.addEventListener('blur', () => {
-    el.contentEditable = 'false';
-    const v = el.innerText.replace(/\n$/, '');
-    api.set({ [key]: v });
-    fillText(el, v, links);
-  });
-  el.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); el.blur(); }
-    e.stopPropagation();
-  });
-  return el;
 }
 
 const head = (icon, label, color, ...extra) =>
@@ -137,6 +98,7 @@ export const WIDGETS = {
     render(it, api) {
       return h('div', { class: 'frame', style: { '--c': it.data.color } },
         h('div', { class: 'frame-title' }, editable(api, 'title', { placeholder: 'Область', links: false }),
+          it.data.layout && it.data.layout !== 'free' ? h('span', { class: 'frame-status', title: 'Объекты внутри раскладываются автоматически' }, { hbox: '⇄ строка', vbox: '⇅ столбец', grid: '▦ сетка' }[it.data.layout]) : null,
           it.data.kanban ? h('span', { class: 'frame-status', title: 'Колонка канбана: карточка, брошенная сюда, получит значение «' + (it.data.title || '') + '» в подходящем выпадающем списке' }, '⇢ колонка') : null));
     },
   },
@@ -235,14 +197,14 @@ export function textOf(it) {
       const def = getComponent(c.type);
       try { parts.push(def?.text ? def.text(c.data, { optionOf, store }) : ''); } catch {}
     }
-    return parts.join(' ');
+    return plain(parts.join(' '));
   }
   walk(it.type === 'draw' ? '' : d);
-  return parts.join(' ');
+  return plain(parts.join(' '));
 }
 
 export function titleOf(it) {
   const w = WIDGETS[it.type];
-  const t = (w?.title?.(it.data) || '').trim();
+  const t = plain(w?.title?.(it.data) || '').trim();
   return t || w?.label || it.type;
 }

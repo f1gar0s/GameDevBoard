@@ -76,7 +76,7 @@ const dd = (env, key, label, valueText = null) => {
 
 // ---------- список инструментов ----------
 export const TOOLS = [
-  { id: 'empty', name: 'Пустая карточка', icon: '▭', group: 'Основа', w: 280, desc: 'Соберите свою карточку из компонентов', make: () => [] },
+  { id: 'empty', name: 'Карточка', icon: '▭', group: 'Основа', w: 280, desc: 'Название и текст с гиперссылками на фреймы и объекты', make: (env, o) => [comp('text', { text: o.text ?? '', placeholder: 'Текст… выделите слова и нажмите 🔗, чтобы сделать ссылку', multiline: true })] },
   { id: 'dialogue', name: 'Реплика (диалог)', icon: '💬', group: 'Геймдизайн', standalone: 'dialogue', desc: 'Диалоговая система: стрелки — варианты ответа, ▶ плейтест' },
   { id: 'character', name: 'Персонаж', icon: '🧙', group: 'Геймдизайн', w: 290, make: (env, o) => [comp('character', o.data)] },
   { id: 'item', name: 'Предмет', icon: '🗡', group: 'Геймдизайн', w: 270, make: (env, o) => [comp('item', o.data)] },

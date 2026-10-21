@@ -54,7 +54,8 @@ async function renderHome() {
       h('button', { title: 'Скачать файл', onClick: (e) => { e.stopPropagation(); exportBoardFile(b); } }, '⤓'),
       h('button', { title: 'Удалить', class: 'danger', onClick: (e) => { e.stopPropagation(); confirmDelete(b); } }, '🗑')));
   const features = [
-    ['🧩', 'Карточки из компонентов', 'Как в Unity: добавляйте компоненты на карточку, переставляйте и настраивайте через ⚙'],
+    ['🗂', 'Иерархия фреймов', 'Как в Unity: разделы, подразделы и фреймы-страницы; большой проект не тормозит'],
+    ['🔗', 'Гиперссылки в тексте', 'Выделите слова и сошлитесь на фрейм или объект; названия фреймов становятся ссылками сами'],
     ['💬', 'Плейтест диалогов', 'Соберите граф реплик и пройдите его как игрок прямо на доске'],
     ['▾', 'Выпадающие списки', 'Варианты с цветами живут в отдельной карточке-списке и общие для всей доски'],
     ['🐞', 'Баги и задачи', 'Приоритет, готовность, кто оставил и кто решает; канбан по фреймам'],
@@ -127,7 +128,7 @@ function buildToolbar() {
   tb.replaceChildren(
     ...DRAW_TOOLS.map((t) => t ? h('button', { class: 'tool', 'data-tool': t[0], title: `${t[2]} (${t[3]})`, onClick: () => setTool(t[0]) }, t[1]) : h('div', { class: 'tb-sep' })),
     h('div', { class: 'tb-sep' }),
-    h('button', { class: 'tool lib-btn', id: 'btn-library', title: 'Инструменты, компоненты и шаблоны', onClick: toggleLibrary }, '＋', h('small', {}, 'Инстр.')),
+    h('button', { class: 'tool lib-btn', id: 'btn-library', title: 'Объекты и шаблоны', onClick: toggleLibrary }, '＋', h('small', {}, 'Инстр.')),
     h('div', { class: 'tb-sep' }),
     h('button', { class: 'tool', title: 'Отменить (Ctrl+Z)', onClick: () => store.undo() }, '↶'),
     h('button', { class: 'tool', title: 'Повторить (Ctrl+Shift+Z)', onClick: () => store.redo() }, '↷'));
@@ -192,14 +193,9 @@ function buildLibrary() {
   lib.replaceChildren(
     h('div', { class: 'drawer-head' }, h('b', {}, 'Инструменты'), h('button', { class: 'icon-btn', onClick: () => toggleLibrary(false) }, '✕')),
     h('div', { class: 'drawer-body scroll' },
-      h('div', { class: 'lib-tip top' }, 'Инструмент = карточка с готовым набором компонентов. На любую карточку можно добавить ещё компоненты кнопкой «+ Компонент».'),
+      h('div', { class: 'lib-tip top' }, 'Объекты для доски. Поля настраиваются шестерёнкой ⚙ в шапке карточки; выпадающие списки берут варианты из объекта «Список».'),
       groups.map((g) => h('div', { class: 'lib-group' }, h('div', { class: 'lib-gt' }, g.name), h('div', { class: 'lib-grid' }, g.tools.map(toolTile)))),
       h('div', { class: 'lib-group' }, h('div', { class: 'lib-gt' }, 'Базовые элементы'), h('div', { class: 'lib-grid' }, BASIC.map(basicTile))),
-      h('div', { class: 'lib-group' }, h('div', { class: 'lib-gt' }, `Компоненты (${allComponents().length})`),
-        h('div', { class: 'comp-catalog' }, allComponents().map((c) => h('div', { class: 'cc-row', title: c.description || '' },
-          h('span', { class: 'lt-i sm' }, c.icon || '▪'), h('span', { class: 'grow' }, c.name || c.type),
-          c.extends ? h('small', { class: 'muted' }, '← ' + (c.parent?.name || c.extends)) : h('small', { class: 'muted mono' }, c.type)))),
-        h('div', { class: 'lib-tip' }, 'Компоненты загружаются из папки components/. Свой компонент: создайте файл, добавьте его в components/manifest.js. Через extends можно взять логику готового компонента и дописать свою (пример — header.js).')),
       h('div', { class: 'lib-group' }, h('div', { class: 'lib-gt' }, 'Вставить шаблон'),
         h('div', { class: 'lib-list' }, TEMPLATES.map((t) => h('button', {
           class: 'lib-row', draggable: 'true', onClick: () => insertTemplate(t),
@@ -314,7 +310,7 @@ function renderOverview() {
       for (const cp of c.data.components || []) {
         const d = cp.data;
         const def = getComponent(cp.type);
-        if (!def) { issues.push({ id: c.id, msg: `Компонент «${cp.type}» не найден в папке components` }); continue; }
+        if (!def) { issues.push({ id: c.id, msg: `Поле «${cp.type}» не найдено в папке components` }); continue; }
         if (cp.type === 'dropdown') {
           if (!d.list) issues.push({ id: c.id, msg: `Выпадающий список «${d.label}» не привязан к списку` });
           else if (!resolveList(d.list)) issues.push({ id: c.id, msg: `Выпадающий список «${d.label}»: карточка-список удалена` });
@@ -468,13 +464,13 @@ function showHelp() {
     h('h4', {}, 'Фишки для геймдева'),
     h('ul', { class: 'tips' },
       h('li', {}, 'Диалоги: связывайте реплики, подпись связи — вариант ответа. ▶ Играть — пройти как игрок.'),
-      h('li', {}, 'Карточка = набор компонентов. «+ Компонент» внизу карточки, ⠿ — перетащить компонент, ⚙ — настроить, ↑↓ — порядок.'),
+      h('li', {}, 'Карточка — объект с полями (баг, задача, персонаж…). ⚙ в шапке — настройки полей: какой список у выпадающего меню, подписи, размеры.'),
       h('li', {}, 'Выпадающий список берёт варианты из карточки «Список» (текст + цвет). Поменяли вариант в списке — обновились все карточки.'),
       h('li', {}, 'Иерархия слева (B): разделы и подразделы любой глубины, в них — фреймы. Фрейм — отдельная страница доски, на холсте только его элементы, поэтому большие проекты не тормозят.'),
-      h('li', {}, 'Ссылка в тексте: напишите в стикере или тексте [[Имя фрейма]] — получится ссылка, клик открывает фрейм. Готовую ссылку даёт меню фрейма в иерархии.'),
+      h('li', {}, 'Гиперссылка: начните править текст, выделите слова и нажмите «🔗 Ссылка» (или Ctrl+K) — выберите фрейм или объект. Слово, совпадающее с названием фрейма (регистр не важен), становится ссылкой само.'),
       h('li', {}, 'Выделенное можно перенести на другой фрейм (📄 → на панели над выделением). Область — «📄 В отдельный фрейм».'),
+      h('li', {}, 'Область может сама раскладывать объекты: в строку (HBox), в столбец (VBox) или сеткой — как контейнеры в Godot. Выберите режим на панели над областью.'),
       h('li', {}, 'Область можно сделать колонкой канбана (панель над областью): карточка, брошенная в неё, получит вариант с названием области, например «В работе».'),
-      h('li', {}, 'Кнопка-ссылка: ⚙ рядом с кнопкой → выберите фрейм или объект; если объект на другом фрейме, кнопка откроет этот фрейм.'),
       h('li', {}, 'Уровень: левая кнопка рисует выбранным тайлом, правая стирает. Холст: слои перетаскиваются за ⠿.'),
       h('li', {}, 'Кривая баланса: каждая строка «Имя: формула» от lvl, например «Урон: 10 + lvl^1.3».'),
       h('li', {}, 'Экспорт → «Данные для движка» отдаёт JSON с персонажами, предметами, диалогами, уровнями и таблицами.'))), { wide: true });
@@ -495,7 +491,7 @@ async function openBoard(id) {
   const b = store.board?.id === id ? store.board : await DB.get(id);
   if (!b) { toast('Доска не найдена', 'err'); location.hash = '#/'; return; }
   const needFit = !b.view;
-  if (migrateItems(b.items)) { toast('Доска обновлена до карточек с компонентами', 'ok', 3500); }
+  if (migrateItems(b.items)) { toast('Доска обновлена до нового формата карточек', 'ok', 3500); }
   gcAssets(b);
   showScreen('editor');
   store.load(b);
@@ -507,7 +503,7 @@ async function openBoard(id) {
   else if (collab.active) leave();
   if (!localStorage.getItem('gdb-seen-hint')) {
     try { localStorage.setItem('gdb-seen-hint', '1'); } catch {}
-    setTimeout(() => toast('Совет: ＋ Инструменты слева — карточки с компонентами, диалоги, баги, карты. «?» внизу — горячие клавиши', 'info', 6000), 600);
+    setTimeout(() => toast('Совет: ＋ Инструменты слева — объекты: баги, задачи, персонажи, диалоги, карты. «?» внизу — горячие клавиши', 'info', 6000), 600);
   }
 }
 async function route() {
@@ -548,7 +544,7 @@ async function route() {
 
 // ======================= СТАРТ =======================
 const failed = await loadComponents();
-if (failed.length) setTimeout(() => toast('Не загрузились компоненты: ' + failed.join(', '), 'err', 6000), 800);
+if (failed.length) setTimeout(() => toast('Не загрузились модули полей: ' + failed.join(', '), 'err', 6000), 800);
 initCanvas();
 initHierarchy();
 buildToolbar();

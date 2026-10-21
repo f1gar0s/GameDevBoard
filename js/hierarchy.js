@@ -12,6 +12,7 @@ let selected = null;       // выбранный раздел (куда доба
 let renaming = null;       // id узла, который сейчас переименовывают
 let dragId = null;
 let filter = '';
+let pressing = false, pendingRender = false;
 
 const LS = (k, v) => { try { if (v === undefined) return JSON.parse(localStorage.getItem(k) || 'null'); localStorage.setItem(k, JSON.stringify(v)); } catch { return null; } };
 const collapsedKey = () => 'gdb-tree-collapsed-' + (store.board?.id || '');
@@ -136,9 +137,10 @@ function rowFor(n, depth, cnt, people) {
     ? (() => {
       const inp = h('input', { class: 'tree-rename', value: n.name, maxlength: 80 });
       let done = false;
-      const finish = (save) => { if (done) return; done = true; if (save) rename(n.id, inp.value); renaming = null; render(); };
+      // после потери фокуса перерисовываем чуть позже: иначе клик по другой строке «теряется» (строка пересоздаётся между нажатием и отпусканием)
+      const finish = (save, later) => { if (done) return; done = true; renaming = null; if (save) rename(n.id, inp.value); later ? setTimeout(render, 200) : render(); };
       inp.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') finish(true); if (e.key === 'Escape') finish(false); };
-      inp.onblur = () => finish(true);
+      inp.onblur = () => finish(true, true);
       inp.onpointerdown = (e) => e.stopPropagation();
       setTimeout(() => { inp.focus(); inp.select(); }, 0);
       return inp;
@@ -215,6 +217,8 @@ export function render() {
   if (!panel || !store.board) return;
   renderCrumbs();
   if (panel.classList.contains('closed')) return;
+  // кнопка мыши зажата над панелью — перерисуем после отпускания, иначе клик потеряется
+  if (pressing) { pendingRender = true; return; }
   // идёт переименование — не пересоздаём поле ввода (перерисуем после Enter)
   if (renaming && document.activeElement?.classList.contains('tree-rename') && listEl.contains(document.activeElement)) return;
   const cnt = counts();
@@ -264,6 +268,9 @@ function setWidth(px) {
 
 export function initHierarchy() {
   panel = $('#hierarchy');
+  panel.addEventListener('pointerdown', () => { pressing = true; });
+  const release = () => { if (!pressing) return; pressing = false; if (pendingRender) { pendingRender = false; setTimeout(render, 0); } };
+  for (const ev of ['pointerup', 'pointercancel', 'dragend', 'drop']) window.addEventListener(ev, release, true);
   filterEl = h('input', { class: 'input tree-filter', placeholder: 'Поиск фрейма…' });
   filterEl.oninput = () => { filter = filterEl.value.trim(); render(); };
   filterEl.onkeydown = (e) => {

@@ -1,6 +1,8 @@
 // Бесконечный холст: отрисовка, выделение, перетаскивание, связи, инструменты
 import { store, pageOf, pathOf, framesInOrder } from './store.js';
-import { WIDGETS, STICKY_COLORS, ACCENT_COLORS, setLinkHandler } from './widgets.js';
+import { WIDGETS, STICKY_COLORS, ACCENT_COLORS } from './widgets.js';
+import { setLinkHandler, autoSig } from './richtext.js';
+import { setToolIcon } from './picker.js';
 import { resolveList, dropImageOnCard } from './card.js';
 import { makeCard, liveEnv, toolById } from './tools.js';
 import { h, s, uid, clamp, isTyping, toast, readFileAsDataURL, loadImage, debounce, parseYouTube, youTubeTitle, imageFileToDataURL } from './util.js';
@@ -174,8 +176,11 @@ function apiFor(id) {
 }
 
 // ---------- отрисовка элементов ----------
+let treeVer = 0; // меняется при переименовании фреймов — для автоссылок в тексте
+const TEXTY = new Set(['sticky', 'text', 'shape', 'card']);
 function renderKey(it) {
   let k = JSON.stringify(it.data) + '|' + it.w + '|' + it.h;
+  if (TEXTY.has(it.type)) k += '|t' + treeVer;
   if (it.type === 'dialogue') k += '|' + store.outgoing(it.id).map((l) => l.label + l.to + (l.cond || '') + (l.actions || '')).join(',') + '|' + store.incoming(it.id).length;
   if (it.type === 'image' || it.type === 'sprite') k += '|' + (store.board.assets[it.data.asset] ? 1 : 0);
   const watch = WIDGETS[it.type]?.watch?.(it);
@@ -200,6 +205,7 @@ const sizeObs = typeof ResizeObserver !== 'undefined' ? new ResizeObserver((entr
     const hh = Math.round(en.target.offsetHeight);
     if (hh > 0 && Math.abs(hh - it.h) > 1) {
       it.h = hh;
+      scheduleArrange();
       updateLinksFor(id);
       if (sel.has(id)) updateSelUI(false);
       store.save();
@@ -259,6 +265,76 @@ export const nodeOf = (id) => nodes.get(id)?.el;
 
 // ---------- связи ----------
 function center(it) { return { x: it.x + it.w / 2, y: it.y + it.h / 2 }; }
+
+// ---------- раскладка внутри областей (как HBoxContainer / VBoxContainer / GridContainer в Godot) ----------
+export const LAYOUTS = { free: 'Свободно', hbox: 'Строка', vbox: 'Столбец', grid: 'Сетка' };
+const PAD = 20, GAP = 16;
+const inRect = (p, r) => p.x > r.x && p.x < r.x + r.w && p.y > r.y && p.y < r.y + r.h;
+// ближайшая (самая маленькая) область, в которой лежит центр элемента
+function parentArea(it, areas) {
+  let best = null;
+  const c = center(it);
+  for (const a of areas) {
+    if (a.id === it.id || (it.type === 'frame' && a.w * a.h <= it.w * it.h)) continue;
+    if (inRect(c, a) && (!best || a.w * a.h < best.w * best.h)) best = a;
+  }
+  return best;
+}
+function arrangeArea(area, items, areas) {
+  const mode = area.data.layout;
+  if (!mode || mode === 'free') return;
+  const kids = items.filter((it) => it.id !== area.id && !it.locked && parentArea(it, areas)?.id === area.id);
+  if (!kids.length) return;
+  const cx = (it) => it.x + it.w / 2, cy = (it) => it.y + it.h / 2;
+  if (mode === 'hbox') kids.sort((a, b) => cx(a) - cx(b));
+  else if (mode === 'vbox') kids.sort((a, b) => cy(a) - cy(b));
+  else {
+    // сетка: порядок чтения — по строкам (с допуском по высоте), затем слева направо
+    const tol = Math.max(30, Math.min(...kids.map((k) => k.h)) / 2);
+    kids.sort((a, b) => (Math.abs(cy(a) - cy(b)) < tol ? cx(a) - cx(b) : cy(a) - cy(b)));
+  }
+  const pos = new Map();
+  let W = 0, H = 0;
+  if (mode === 'hbox') {
+    let x = 0;
+    for (const k of kids) { pos.set(k.id, [x, 0]); x += k.w + GAP; H = Math.max(H, k.h); }
+    W = x - GAP;
+  } else if (mode === 'vbox') {
+    let y = 0;
+    for (const k of kids) { pos.set(k.id, [0, y]); y += k.h + GAP; W = Math.max(W, k.w); }
+    H = y - GAP;
+  } else {
+    const cols = Math.max(1, Math.min(12, +area.data.cols || 3));
+    const colW = Math.max(...kids.map((k) => k.w));
+    let y = 0;
+    for (let i = 0; i < kids.length; i += cols) {
+      const row = kids.slice(i, i + cols);
+      row.forEach((k, j) => pos.set(k.id, [j * (colW + GAP), y]));
+      y += Math.max(...row.map((k) => k.h)) + GAP;
+    }
+    W = Math.min(cols, kids.length) * (colW + GAP) - GAP;
+    H = y - GAP;
+  }
+  const o = { arranging: true };
+  const aw = Math.max(160, Math.round(W + PAD * 2)), ah = Math.max(100, Math.round(H + PAD * 2));
+  if (area.w !== aw || area.h !== ah) store.patch(area.id, { w: aw, h: ah }, o);
+  for (const k of kids) {
+    const [dx, dy] = pos.get(k.id);
+    const nx = Math.round(area.x + PAD + dx), ny = Math.round(area.y + PAD + dy);
+    if (k.x !== nx || k.y !== ny) store.patch(k.id, { x: nx, y: ny }, o);
+  }
+}
+// разложить все области открытого фрейма (вложенные — сначала, чтобы внешние учли их новый размер)
+export function arrangeAll() {
+  if (!store.board) return;
+  const areas0 = pageItems().filter((i) => i.type === 'frame' && i.data.layout && i.data.layout !== 'free').sort((a, b) => a.w * a.h - b.w * b.h);
+  for (const a of areas0) {
+    const items = pageItems();
+    arrangeArea(store.item(a.id), items, items.filter((i) => i.type === 'frame'));
+  }
+  if (areas0.length && sel.size) updateSelUI(false);
+}
+const scheduleArrange = debounce(() => { if (gesture) scheduleArrange(); else arrangeAll(); }, 60);
 function edgePoint(r, t) {
   const cx = r.x + r.w / 2, cy = r.y + r.h / 2;
   const dx = t.x - cx, dy = t.y - cy;
@@ -421,6 +497,18 @@ function buildCtxbar() {
   }
   if (one === 'frame') {
     parts.push(swatches(ACCENT_COLORS, first.data.color, (c) => patchSelected(() => ({ data: { color: c } }))));
+    // раскладка содержимого области
+    const lay = first.data.layout || 'free';
+    const setLay = (mode) => { patchSelected(() => ({ data: { layout: mode } })); buildCtxbar(); };
+    parts.push(h('div', { class: 'cx-group', title: 'Как располагать объекты внутри области' },
+      [['free', '✥', 'Свободно — объекты лежат где положили'], ['hbox', '⇄', 'Строка (HBox) — объекты выстраиваются слева направо'], ['vbox', '⇅', 'Столбец (VBox) — объекты выстраиваются сверху вниз'], ['grid', '▦', 'Сетка — объекты выстраиваются таблицей']].map(([k, ic, t]) =>
+        h('button', { class: 'cx-btn' + (lay === k ? ' on' : ''), title: t, onClick: () => setLay(k) }, ic))));
+    if (lay === 'grid') {
+      const cols = h('input', { class: 'cx-input small', type: 'number', min: 1, max: 12, value: first.data.cols || 3, title: 'Столбцов в сетке', style: { width: '54px' } });
+      cols.onchange = () => patchSelected(() => ({ data: { cols: Math.max(1, Math.min(12, +cols.value || 3)) } }));
+      cols.onkeydown = (e) => e.stopPropagation();
+      parts.push(h('span', { class: 'cx-lbl' }, 'столбцов'), cols);
+    }
     parts.push(h('button', {
       class: 'cx-btn' + (first.data.kanban ? ' on' : ''),
       title: 'Колонка канбана: карточка, брошенная во фрейм, получит значение, совпадающее с названием фрейма, в своём выпадающем списке (например «В работе»)',
@@ -699,6 +787,13 @@ function onDown(e) {
   // кнопки и холсты внутри карточек работают всегда; поля ввода — только у уже выделенного элемента
   const always = e.target.closest('button, a, .no-drag, input[type="checkbox"], input[type="color"], .chart');
   const field = e.target.closest('input, textarea, select, label, [contenteditable="true"], [contenteditable="plaintext-only"]');
+  // текст со ссылками в карточке: у выделенной карточки клик сразу начинает правку в месте клика
+  const rich = !field && !always && e.target.closest('.rt-field');
+  if (itemEl && rich && e.button === 0 && sel.has(itemEl.dataset.id) && sel.size === 1 && tool === 'select') {
+    e.preventDefault();
+    rich._edit(e.clientX, e.clientY);
+    return;
+  }
   if (itemEl && (always || (field && sel.has(itemEl.dataset.id) && sel.size === 1 && tool === 'select'))) {
     if (!sel.has(itemEl.dataset.id)) selectOnly(itemEl.dataset.id);
     return;
@@ -716,7 +811,7 @@ function onDown(e) {
   const linkEl = e.target.closest('[data-link]');
   switch (tool) {
     case 'select':
-      if (itemEl) { startDrag(e, itemEl.dataset.id); if (gesture?.type === 'drag') gesture.focusEl = field && field.matches('input, textarea') ? field : null; }
+      if (itemEl) { startDrag(e, itemEl.dataset.id); if (gesture?.type === 'drag') gesture.focusEl = rich || (field && field.matches('input, textarea') ? field : null); }
       else if (linkEl) { selectLink(linkEl.dataset.link); return; }
       else if (e.pointerType === 'touch') startPan(e);
       else startMarquee(e);
@@ -863,6 +958,7 @@ function onUp(e) {
       document.querySelectorAll('.item.drop-target').forEach((n) => n.classList.remove('drop-target'));
       if (!g.moved) {
         if (!g.shift && sel.size > 1) selectOnly(g.clickId);
+        if (g.focusEl?.isConnected && sel.size === 1 && g.focusEl._edit) { g.focusEl._edit(e.clientX, e.clientY); return; }
         if (g.focusEl?.isConnected && sel.size === 1) { g.focusEl.focus(); if (g.focusEl.select && g.focusEl.type !== 'number' && g.focusEl.tagName === 'INPUT') g.focusEl.select(); }
         return;
       }
@@ -878,8 +974,9 @@ function onUp(e) {
         }
       }
       updateSelUI();
+      scheduleArrange();
       break;
-    case 'resize': updateSelUI(); break;
+    case 'resize': updateSelUI(); scheduleArrange(); break;
     case 'link': {
       g.line.remove();
       document.querySelectorAll('.item.link-target').forEach((n) => n.classList.remove('link-target'));
@@ -995,6 +1092,7 @@ export function initCanvas() {
     h('div', { class: 'handle link', 'data-handle': 'link', title: 'Протяните к другому элементу, чтобы связать' }, '⟶'));
   vp.dataset.tool = 'select';
   setLinkHandler(goTo);
+  setToolIcon((it) => toolById(it.data.tool)?.icon);
 
   vp.addEventListener('pointerdown', onDown);
   window.addEventListener('pointermove', onMove);
@@ -1013,13 +1111,16 @@ export function initCanvas() {
   }, { passive: false });
   vp.addEventListener('dblclick', (e) => {
     if (e.target.closest('#ctxbar')) return;
-    const itemEl = e.target.closest('.item');
+    // из-за захвата указателя событие может прийти на сам холст — берём элемент под курсором
+    const tgt = e.target === vp ? document.elementFromPoint(e.clientX, e.clientY) || vp : e.target;
+    const itemEl = tgt.closest('.item');
     if (itemEl) {
-      const ed = e.target.closest('.editable') || itemEl.querySelector('.editable');
-      ed?._edit?.();
+      const ed = tgt.closest('.editable') || itemEl.querySelector('.editable');
+      if (ed?.classList.contains('rt')) ed._edit?.(e.clientX, e.clientY);
+      else ed?._edit?.();
       return;
     }
-    const linkEl = e.target.closest('[data-link]');
+    const linkEl = tgt.closest('[data-link]');
     if (linkEl) { selectLink(linkEl.dataset.link); setTimeout(() => ctxbar._focus?.(), 20); return; }
     // двойной клик по пустому месту ничего не создаёт (стикер — клавиша N или панель слева)
   });
@@ -1094,10 +1195,11 @@ export function initCanvas() {
   store.on('load', (b) => { mountPage(loadedId === b.id); loadedId = b.id; });
   store.on('page', () => mountPage(false));
   // переименовали/переместили фрейм — обновить кнопки, которые на него ссылаются
-  const treeChanged = (id) => { for (const it of pageItems()) if (it.type === 'card') mountItem(it); };
+  const treeChanged = () => { treeVer++; for (const it of pageItems()) if (TEXTY.has(it.type)) mountItem(it); };
   store.on('tree', (n) => treeChanged(n.id));
   store.on('treerm', (id) => treeChanged(id));
   store.on('item', (it, opts) => {
+    if (!opts.remote && !opts.norender && !opts.arranging && !opts.restore && onPage(it)) scheduleArrange();
     if (opts.norender) {
       const rec = nodes.get(it.id);
       if (rec) place(rec.el, it); else mountItem(it);
@@ -1112,7 +1214,8 @@ export function initCanvas() {
     if (sel.has(it.id)) { updateSelUI(!opts.norender && !opts.remote); }
     else if (!onPage(it)) updateSelUI(true);
   });
-  store.on('remove', (id) => {
+  store.on('remove', (id, opts) => {
+    if (!opts?.remote) scheduleArrange();
     sizeObs?.unobserve(nodes.get(id)?.el || document.body);
     unmountItem(id);
     remountDependents(id);

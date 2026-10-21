@@ -1,5 +1,6 @@
 // Экспорт/импорт: файл доски, GDD в Markdown, JSON для движка, ссылка-снимок
 import { store, newBoard, ensureTree, childrenOf, pageOf } from './store.js';
+import { plain } from './richtext.js';
 import { uid, download, compress, decompress, h, modal, toast } from './util.js';
 import { RARITY, STATUS, TILES, PRIORITY, parseSeries, sampleSeries, tileRows } from './widgets.js';
 import * as lib from './lib.js';
@@ -99,7 +100,7 @@ export function exportGDD(board = store.board) {
     }
   };
   walk(null, 0);
-  download(`${slug(board.name)}-GDD.md`, out.replace(/\n{3,}/g, '\n\n'), 'text/markdown');
+  download(`${slug(board.name)}-GDD.md`, plain(out).replace(/\n{3,}/g, '\n\n'), 'text/markdown');
 }
 function pageMd(items, lvl) {
   const hd = '#'.repeat(lvl);
