@@ -56,7 +56,7 @@ function targetTitle(t) {
   const n = store.tree?.[t];
   if (n) return (n.kind === 'frame' ? 'Фрейм «' : 'Раздел «') + pathOf(store.tree, t).join(' / ') + '»';
   const it = store.item(t);
-  if (it) return 'Объект «' + (plain(it.data.title || it.data.text || '').slice(0, 40) || it.type) + '» · ' + pathOf(store.tree, pageOf(it)).join(' / ');
+  if (it) return 'Объект «' + (it.name || plain(it.data.title || it.data.text || '').slice(0, 40) || it.type) + '» · ' + pathOf(store.tree, pageOf(it)).join(' / ');
   return 'Перейти: ' + t;
 }
 export function fill(el, text, { auto = true, selfPage = null } = {}) {

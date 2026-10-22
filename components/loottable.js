@@ -1,5 +1,8 @@
 // Таблица лута: веса и шансы. Строка — предмет с доски (выпадающий список всех «Предметов») или свой текст.
-// Редкость строки — выпадающий список из карточки-списка «Редкость».
+// У строки-предмета редкость берётся из самого предмета (только просмотр); у своей строки — выпадающий список.
+import { itemRarity } from './item.js';
+const linkedComp = (r, x) => (r.item ? x.store.item(r.item.card)?.data.components?.find((c) => c.id === r.item.comp) : null);
+const rowRarity = (r, d, x) => { const c = linkedComp(r, x); if (c) return itemRarity(c.data, x); const o = x.optionOf(d.list, r.opt); return o ? { text: o.text, color: o.color } : null; };
 const itemName = (r, x) => x.store.item(r.item?.card)?.data.components?.find((c) => c.id === r.item.comp)?.data.name ?? r.name;
 
 export default {
@@ -10,7 +13,7 @@ export default {
   openOnAdd: true,
   defaults: () => ({ title: 'Сундук', list: null, rows: [{ name: 'Золото x10', w: 50, opt: null }, { name: 'Зелье', w: 30, opt: null }] }),
   deps: (d) => [d.list?.card],
-  watch: ['item'], // перерисовка, когда на доске появляется, меняется или удаляется предмет
+  watch: ['item', 'list'], // перерисовка, когда меняется предмет или список вариантов
 
   render(ctx) {
     const { h, data: d } = ctx;
@@ -21,15 +24,10 @@ export default {
     const pcts = rows.map(() => h('span', { class: 'pct' }));
     const bars = rows.map(() => h('i'));
     const refresh = () => rows.forEach((r, i) => { const p = (Math.max(0, +r.w || 0) / weight()) * 100; pcts[i].textContent = p.toFixed(1) + '%'; bars[i].style.width = p + '%'; });
-    const color = (r) => ctx.optionOf(d.list, r.opt)?.color || '#9ca3af';
+    const color = (r) => rowRarity(r, d, ctx)?.color || '#9ca3af';
     const items = ctx.compsOnBoard('item');
     const linked = (r) => (r.item ? ctx.resolveComp(r.item) : null);
     const nameOf = (r) => linked(r)?.data.name ?? r.name;
-    // вариант редкости из списка, совпадающий с редкостью предмета
-    const rarityOpt = (itemData) => {
-      const want = ctx.lib.RARITY[itemData.rarity]?.name?.toLowerCase();
-      return ctx.resolveList(d.list)?.items.find((o) => o.text.toLowerCase() === want)?.id || null;
-    };
     const itemSelect = (r, i) => {
       const cur = r.item ? `${r.item.card}|${r.item.comp}` : '';
       const sel = h('select', { class: 'f sel item-pick', title: 'Предмет с доски' },
@@ -42,14 +40,15 @@ export default {
           ctx.begin();
           const card = ctx.createTool('item', { title: r.name || 'Новый предмет', data: { name: r.name || 'Новый предмет' } });
           const comp = card.data.components[0];
-          ctx.set({ rows: rows.map((x, j) => (j === i ? { ...x, item: { card: card.id, comp: comp.id }, name: comp.data.name, opt: rarityOpt(comp.data) || x.opt } : x)) });
+          ctx.set({ rows: rows.map((x, j) => (j === i ? { ...x, item: { card: card.id, comp: comp.id }, name: comp.data.name } : x)) });
           ctx.toast('Предмет создан рядом с таблицей', 'ok');
           return;
         }
         if (!sel.value) { ctx.change({ rows: rows.map((x, j) => (j === i ? { ...x, item: null, name: nameOf(x) } : x)) }); return; }
         const [card, comp] = sel.value.split('|');
         const it = items.find((x) => x.ref.card === card && x.ref.comp === comp);
-        ctx.change({ rows: rows.map((x, j) => (j === i ? { ...x, item: { card, comp }, name: it?.data.name || x.name, opt: (it && rarityOpt(it.data)) || x.opt } : x)) });
+        // редкость при этом берётся из предмета автоматически (см. rowRarity)
+        ctx.change({ rows: rows.map((x, j) => (j === i ? { ...x, item: { card, comp }, name: it?.data.name || x.name } : x)) });
       };
       return sel;
     };
@@ -61,7 +60,10 @@ export default {
       nm.onfocus = w.onfocus = () => ctx.begin();
       if (nm.tagName === 'INPUT') nm.oninput = () => { rows[i].name = nm.value; ctx.live({ rows }); };
       w.oninput = () => { rows[i].w = +w.value; ctx.live({ rows }); refresh(); };
-      const dd = d.list ? ctx.dropdown(d.list, r.opt, (v) => ctx.change({ rows: rows.map((x, j) => (j === i ? { ...x, opt: v } : x)) }), { compact: true, placeholder: '—' }) : h('span');
+      const rr = rowRarity(r, d, ctx);
+      const dd = linked(r)
+        ? h('span', { class: 'rar-fixed', style: { '--oc': rr?.color || 'transparent' }, title: 'Редкость задана в самом предмете — меняется там' }, h('i', { class: 'dd-dot' }), rr?.text || 'без редкости', ' 🔒')
+        : d.list ? ctx.dropdown(d.list, r.opt, (v) => ctx.change({ rows: rows.map((x, j) => (j === i ? { ...x, opt: v } : x)) }), { compact: true, placeholder: '—' }) : h('span');
       return h('div', { class: 'loot-row2', style: { '--c': color(r) } },
         h('div', { class: 'lr-top' }, itemSelect(r, i), nm, w, h('button', { class: 'x', onClick: () => ctx.change({ rows: rows.filter((_, j) => j !== i) }) }, '×')),
         h('div', { class: 'lr-bot' }, dd, h('div', { class: 'lbar', style: { '--c': color(r) } }, bars[i], pcts[i], sims[i])));
@@ -110,10 +112,10 @@ export default {
 
   exportMd: (d, x) => {
     const tot = (d.rows || []).reduce((a, r) => a + Math.max(0, +r.w || 0), 0) || 1;
-    return `**🎲 ${d.title}**\n\n| Предмет | Редкость | Вес | Шанс |\n|---|---|---|---|\n${(d.rows || []).map((r) => `| ${itemName(r, x)} | ${x.optionOf(d.list, r.opt)?.text || '—'} | ${r.w} | ${((Math.max(0, +r.w || 0) / tot) * 100).toFixed(1)}% |`).join('\n')}`;
+    return `**🎲 ${d.title}**\n\n| Предмет | Редкость | Вес | Шанс |\n|---|---|---|---|\n${(d.rows || []).map((r) => `| ${itemName(r, x)} | ${rowRarity(r, d, x)?.text || '—'} | ${r.w} | ${((Math.max(0, +r.w || 0) / tot) * 100).toFixed(1)}% |`).join('\n')}`;
   },
   exportJson: (d, x) => {
     const tot = (d.rows || []).reduce((a, r) => a + Math.max(0, +r.w || 0), 0) || 1;
-    return { title: d.title, entries: (d.rows || []).map((r) => ({ name: itemName(r, x), item: r.item?.card || undefined, weight: r.w, rarity: x.optionOf(d.list, r.opt)?.text ?? null, chance: Math.round((Math.max(0, +r.w || 0) / tot) * 10000) / 10000 })) };
+    return { title: d.title, entries: (d.rows || []).map((r) => ({ name: itemName(r, x), item: r.item?.card || undefined, weight: r.w, rarity: rowRarity(r, d, x)?.text ?? null, chance: Math.round((Math.max(0, +r.w || 0) / tot) * 10000) / 10000 })) };
   },
 };

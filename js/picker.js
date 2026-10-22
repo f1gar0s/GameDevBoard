@@ -5,13 +5,17 @@ import { store, childrenOf, pageOf } from './store.js';
 
 let el = null, opts = null;
 const openFrames = new Set();
-const ICON = { card: '▭', frame: '▢', text: 'T', sticky: '🗒', shape: '◆', dialogue: '💬', linkbtn: '🔘' };
+const ICON = { card: '▭', frame: '▢', text: 'T', sticky: '🗒', shape: '◆', dialogue: '💬', linkbtn: '🔘', image: '🖼', video: '▶', draw: '✎' };
 let toolIcon = () => null;
 export const setToolIcon = (fn) => { toolIcon = fn; };
 
 const clean = (s) => String(s || '').replace(/\[\[([^\[\]\n|]+)(?:\|[^\[\]\n|]+)?\]\]/g, '$1').replace(/\s+/g, ' ').trim();
 export function objectLabel(it) {
   const d = it.data || {};
+  if (it.name) return '🏷 ' + it.name;
+  if (it.type === 'image') return clean(d.name) || '';
+  if (it.type === 'video') return clean(d.title) || '';
+  if (it.type === 'draw') return '';
   if (it.type === 'card') return clean(d.title) || 'Карточка';
   if (it.type === 'frame') return clean(d.title) || 'Область';
   if (it.type === 'linkbtn') return '🔘 ' + (clean(d.label) || 'Кнопка');

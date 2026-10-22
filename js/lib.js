@@ -205,7 +205,7 @@ export function renderYouTube(d, key, rerender) {
   const src = d.src || 'yt';
   if (playingVideos.has(key)) {
     return h('div', { class: 'yt-frame' },
-      h('iframe', { src: videoEmbedUrl(d), title: d.title || VIDEO_SITES[src], allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen; clipboard-write; screen-wake-lock', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin', frameborder: '0' }),
+      h('iframe', { src: videoEmbedUrl(d), title: d.title || VIDEO_SITES[src], allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen; clipboard-write; screen-wake-lock', referrerpolicy: 'strict-origin-when-cross-origin', frameborder: '0' }),
       h('button', { class: 'yt-stop no-drag', title: 'Остановить и показать обложку', onClick: (e) => { e.stopPropagation(); playingVideos.delete(key); rerender(); } }, '■'));
   }
   const thumb = src === 'yt' ? `https://i.ytimg.com/vi/${d.id}/hqdefault.jpg` : src === 'rutube' ? `https://rutube.ru/api/video/${d.id}/thumbnail/?redirect=1` : null;

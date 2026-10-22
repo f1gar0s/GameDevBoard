@@ -53,7 +53,7 @@ export function targetName(id) {
   if (n) return pathOf(store.tree, id).join(' / ');
   const it = store.item(id);
   if (!it) return null;
-  const name = plain(it.data.title || it.data.label || it.data.text || '').slice(0, 40) || WIDGETS[it.type]?.label || 'объект';
+  const name = it.name || plain(it.data.title || it.data.label || it.data.text || '').slice(0, 40) || WIDGETS[it.type]?.label || 'объект';
   return name + ' · 📄 ' + (store.tree?.[pageOf(it)]?.name || '');
 }
 
@@ -228,11 +228,12 @@ export function textOf(it) {
     return plain(parts.join(' '));
   }
   walk(it.type === 'draw' ? '' : d);
+  if (it.name) parts.unshift(it.name);
   return plain(parts.join(' '));
 }
 
 export function titleOf(it) {
   const w = WIDGETS[it.type];
-  const t = plain(w?.title?.(it.data) || '').trim();
+  const t = (it.name || plain(w?.title?.(it.data) || '')).trim();
   return t || w?.label || it.type;
 }

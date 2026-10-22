@@ -126,7 +126,7 @@ export function goTo(target) {
   const byPath = frames.find((n) => pathOf(store.tree, n.id).join('/').toLowerCase() === q);
   const byName = frames.find((n) => n.name.trim().toLowerCase() === q);
   if (byPath || byName) return openPage((byPath || byName).id);
-  const it = Object.values(store.items).find((i) => (i.type === 'frame' || i.type === 'card') && (i.data.title || '').trim().toLowerCase() === q);
+  const it = Object.values(store.items).find((i) => (i.name || '').trim().toLowerCase() === q) || Object.values(store.items).find((i) => (i.type === 'frame' || i.type === 'card') && (i.data.title || '').trim().toLowerCase() === q);
   if (it) { focusItem(it.id); return true; }
   toast('Не найдено: «' + target + '»', 'err');
   return false;
@@ -188,7 +188,8 @@ function apiFor(id) {
 let treeVer = 0; // меняется при переименовании фреймов — для автоссылок в тексте
 const TEXTY = new Set(['sticky', 'text', 'shape', 'card', 'linkbtn']);
 function renderKey(it) {
-  let k = JSON.stringify(it.data) + '|' + it.w + '|' + it.h;
+  // видео тянется по CSS — размер в ключ не входит, иначе при изменении размера плеер перезапускался бы
+  let k = JSON.stringify(it.data) + '|' + (it.type === 'video' ? '' : it.w + '|' + it.h);
   if (TEXTY.has(it.type)) k += '|t' + treeVer;
   if (it.type === 'dialogue') k += '|' + store.outgoing(it.id).map((l) => l.label + l.to + (l.cond || '') + (l.actions || '')).join(',') + '|' + store.incoming(it.id).length;
   if (it.type === 'image' || it.type === 'sprite') k += '|' + (store.board.assets[it.data.asset] ? 1 : 0);
@@ -262,9 +263,53 @@ function mountItem(it, force = false) {
     let content;
     try { content = W ? W.render(it, apiFor(it.id)) : h('div', { class: 'muted' }, 'Неизвестный тип: ' + it.type); }
     catch (e) { console.error(e); content = h('div', { class: 'muted' }, 'Ошибка отрисовки'); }
-    el.replaceChildren(content);
+    if (rec.content?.parentNode === el) rec.content.replaceWith(content); else el.prepend(content);
+    rec.content = content;
     rec.key = key;
   }
+  chromeFor(rec, it);
+}
+// Имя объекта (чтобы на него ссылаться) и шестерёнка ⚙ — у любого объекта; у карточек, областей
+// и кнопок-ссылок имя — это их заголовок/надпись, поэтому для них шестерёнка своя
+const OWN_NAME = new Set(['card', 'frame', 'linkbtn']);
+function chromeFor(rec, it) {
+  if (OWN_NAME.has(it.type)) { rec.chrome?.remove(); rec.chrome = null; return; }
+  if (!rec.chrome) {
+    rec.chrome = h('div', { class: 'obj-chrome' },
+      h('span', { class: 'obj-name' }),
+      h('button', { class: 'obj-gear', title: 'Имя объекта — чтобы ссылаться на него', onClick: (e) => { e.stopPropagation(); nameDialog(it.id); } }, '⚙'));
+  }
+  if (rec.chrome.parentNode !== rec.el) rec.el.append(rec.chrome);
+  const tag = rec.chrome.firstChild;
+  tag.textContent = it.name ? '🏷 ' + it.name : '';
+  tag.style.display = it.name ? '' : 'none';
+}
+// Окно «Имя объекта»
+let namePop = null;
+export function nameDialog(id) {
+  namePop?.remove();
+  const it = store.item(id), el = nodes.get(id)?.el;
+  if (!it || !el) return;
+  const r = el.getBoundingClientRect();
+  const inp = h('input', { class: 'input', value: it.name || '', placeholder: 'Например: Трейлер, Концепт героя', maxlength: 80 });
+  const close = () => { namePop?.remove(); namePop = null; document.removeEventListener('pointerdown', outside, true); };
+  const save = () => {
+    const v = inp.value.trim();
+    if (v !== (it.name || '')) { store.checkpoint(); store.patch(id, { name: v || undefined }); }
+    close();
+  };
+  const outside = (e) => { if (namePop && !namePop.contains(e.target)) save(); };
+  inp.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') save(); if (e.key === 'Escape') close(); };
+  namePop = h('div', { class: 'name-pop' },
+    h('div', { class: 'np-t' }, '🏷 Имя объекта'),
+    inp,
+    h('div', { class: 'muted small' }, 'По имени объект находится в окне выбора ссылки, в поиске и в обзоре. Сослаться: выделите слова в тексте → 🔗, или кнопка-ссылка.'),
+    h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { class: 'btn', onClick: close }, 'Отмена'), h('button', { class: 'btn primary', onClick: save }, 'Готово')));
+  document.body.append(namePop);
+  const pr = namePop.getBoundingClientRect();
+  namePop.style.left = Math.max(8, Math.min(r.right - pr.width, innerWidth - pr.width - 8)) + 'px';
+  namePop.style.top = (r.top - pr.height - 10 > 60 ? r.top - pr.height - 10 : Math.min(r.bottom + 10, innerHeight - pr.height - 8)) + 'px';
+  setTimeout(() => { inp.focus(); inp.select(); document.addEventListener('pointerdown', outside, true); }, 0);
 }
 function unmountItem(id) {
   nodes.get(id)?.el.remove();
@@ -581,6 +626,7 @@ function buildCtxbar() {
     mv.onkeydown = (e) => e.stopPropagation();
     parts.push(mv);
   }
+  if (items.length === 1 && !OWN_NAME.has(first.type)) parts.push(h('button', { class: 'cx-btn' + (first.name ? ' on' : ''), title: 'Имя объекта — чтобы ссылаться на него', onClick: () => nameDialog(first.id) }, '🏷' + (first.name ? ' ' + first.name : ' Имя')));
   parts.push(
     h('button', { class: 'cx-btn', title: 'Дублировать (Ctrl+D)', onClick: duplicate }, '⧉'),
     one !== 'frame' ? h('button', { class: 'cx-btn', title: 'На передний план', onClick: () => patchSelected(() => ({ z: store.maxZ() + 1 })) }, '⬆') : null,
@@ -1234,8 +1280,21 @@ export function initCanvas() {
     applyView();
     updateSelUI(true);
   };
+  // Повторная загрузка той же доски (например, пришла сохранённая версия от участника):
+  // перерисовываем только изменившееся — иначе перезапускались бы видео и сбивались поля ввода.
+  const refreshPage = () => {
+    const b = store.board;
+    const want = new Set(pageItems().map((i) => i.id));
+    for (const [id, r] of [...nodes]) if (!want.has(id)) { sizeObs?.unobserve(r.el); unmountItem(id); sel.delete(id); }
+    pageItems().forEach((it) => mountItem(it));
+    for (const [id, g] of [...linkEls]) if (!b.links[id]) { g.remove(); linkEls.delete(id); }
+    Object.values(b.links).forEach(renderLink);
+    if (selLink && !b.links[selLink]) selLink = null;
+    applyView();
+    updateSelUI(true);
+  };
   let loadedId = null;
-  store.on('load', (b) => { mountPage(loadedId === b.id); loadedId = b.id; });
+  store.on('load', (b) => { if (loadedId === b.id) refreshPage(); else mountPage(false); loadedId = b.id; });
   store.on('page', () => mountPage(false));
   // переименовали/переместили фрейм — обновить кнопки, которые на него ссылаются
   const treeChanged = () => { treeVer++; for (const it of pageItems()) if (TEXTY.has(it.type)) mountItem(it); };
