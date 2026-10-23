@@ -81,7 +81,7 @@ function referencedAssets(items) {
   const walk = (v) => {
     if (!v || typeof v !== 'object') return;
     if (Array.isArray(v)) { v.forEach(walk); return; }
-    for (const [k, x] of Object.entries(v)) { if (k === 'asset' && typeof x === 'string') out.add(x); else walk(x); }
+    for (const [k, x] of Object.entries(v)) { if ((k === 'asset' || k.endsWith('Asset')) && typeof x === 'string') out.add(x); else walk(x); }
   };
   walk(items);
   return out;
